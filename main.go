@@ -179,6 +179,83 @@ func NewMockLessonStore(loc *time.Location) *MockLessonStore {
 		NextStart:      nextWeekdayAt(loc, time.Wednesday, 19, 0),
 		Confirmed:      false,
 	})
+	store.seed(StudentLesson{
+		ID:             "stu-004",
+		Nickname:       "ต้น",
+		FullName:       "กฤติน ภักดี",
+		Course:         "Physics ม.4",
+		TotalHours:     30,
+		CompletedHours: 10,
+		SessionHours:   2,
+		NextStart:      nextWeekdayAt(loc, time.Tuesday, 17, 30),
+		Confirmed:      true,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-005",
+		Nickname:       "ฟ้า",
+		FullName:       "ฟ้าลดา เกียรติไกร",
+		Course:         "Chemistry ม.5",
+		TotalHours:     28,
+		CompletedHours: 12,
+		SessionHours:   2,
+		NextStart:      nextWeekdayAt(loc, time.Thursday, 18, 0),
+		Confirmed:      false,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-006",
+		Nickname:       "เจ",
+		FullName:       "จิรายุ ตั้งมั่น",
+		Course:         "English Conversation",
+		TotalHours:     16,
+		CompletedHours: 8,
+		SessionHours:   1,
+		NextStart:      nextWeekdayAt(loc, time.Friday, 20, 0),
+		Confirmed:      true,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-007",
+		Nickname:       "ออม",
+		FullName:       "อรอุมา แสงทอง",
+		Course:         "คณิตศาสตร์ ม.6",
+		TotalHours:     40,
+		CompletedHours: 18,
+		SessionHours:   2,
+		NextStart:      nextWeekdayAt(loc, time.Sunday, 10, 0),
+		Confirmed:      false,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-008",
+		Nickname:       "พีท",
+		FullName:       "พีรวิชญ์ สุขสวัสดิ์",
+		Course:         "SAT Math",
+		TotalHours:     20,
+		CompletedHours: 14,
+		SessionHours:   2,
+		NextStart:      nextWeekdayAt(loc, time.Saturday, 15, 30),
+		Confirmed:      true,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-009",
+		Nickname:       "ข้าว",
+		FullName:       "ขวัญชนก มีสุข",
+		Course:         "ภาษาไทย ป.6",
+		TotalHours:     18,
+		CompletedHours: 5,
+		SessionHours:   1,
+		NextStart:      nextWeekdayAt(loc, time.Monday, 16, 0),
+		Confirmed:      false,
+	})
+	store.seed(StudentLesson{
+		ID:             "stu-010",
+		Nickname:       "นิว",
+		FullName:       "นวพล จันทร์เจ้า",
+		Course:         "Biology ม.5",
+		TotalHours:     26,
+		CompletedHours: 20,
+		SessionHours:   2,
+		NextStart:      nextWeekdayAt(loc, time.Wednesday, 17, 0),
+		Confirmed:      true,
+	})
 
 	return store
 }
@@ -358,6 +435,9 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 	if isHelpCommand(normalized) {
 		return commandHelpText(), true, nil
 	}
+	if isScheduleRequestCommand(normalized) {
+		return formatDailyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
+	}
 
 	parts := splitCommandParts(normalized)
 	if len(parts) == 0 {
@@ -438,6 +518,12 @@ func isHelpCommand(text string) bool {
 	return text == "help" || text == "วิธีใช้" || text == "ตัวอย่างคำสั่ง"
 }
 
+func isScheduleRequestCommand(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	text = strings.ReplaceAll(text, " ", "")
+	return text == "/ตารางเรียน"
+}
+
 func isConfirmWord(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = strings.ReplaceAll(text, " ", "")
@@ -448,6 +534,7 @@ func isConfirmWord(text string) bool {
 func commandHelpText() string {
 	return strings.Join([]string{
 		"ตัวอย่างคำสั่ง",
+		"/ตารางเรียน",
 		"อัพเดทเวลาเรียน/แพรว/แพรวา ศิริพงษ์/English Foundation/วันเสาร์ 9 พฤษภาคม 2569 เวลา 13.00-15.00 น.",
 		"คอนเฟิร์มเวลาเรียน/แพรว/แพรวา ศิริพงษ์/English Foundation/วันเสาร์ 9 พฤษภาคม 2569 เวลา 13.00-15.00 น./คอนเฟิร์ม",
 	}, "\n")

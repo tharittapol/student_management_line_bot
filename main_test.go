@@ -78,6 +78,10 @@ func TestFormatDailyLessons(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
 
+	if got := len(store.ListLessons()); got != 10 {
+		t.Fatalf("expected 10 mock lessons, got %d", got)
+	}
+
 	message := formatDailyLessons(store.ListLessons(), time.Date(2026, time.May, 3, 9, 0, 0, 0, loc))
 	if !strings.Contains(message, "แจ้งเวลาเรียนประจำวันที่ วันอาทิตย์ 3 พฤษภาคม 2569") {
 		t.Fatalf("expected Thai daily header, got %q", message)
@@ -87,6 +91,25 @@ func TestFormatDailyLessons(t *testing.T) {
 	}
 	if !strings.Contains(message, "รอคอนเฟิร์ม") {
 		t.Fatalf("expected confirmation status, got %q", message)
+	}
+}
+
+func TestProcessScheduleRequestCommand(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/ตารางเรียน", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected schedule request command to be handled")
+	}
+	if !strings.Contains(response, "แจ้งเวลาเรียนประจำวันที่") {
+		t.Fatalf("expected daily lesson schedule response, got %q", response)
+	}
+	if !strings.Contains(response, "แพรว / แพรวา ศิริพงษ์ / English Foundation") {
+		t.Fatalf("expected current lesson data in response, got %q", response)
 	}
 }
 

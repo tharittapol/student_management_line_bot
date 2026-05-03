@@ -99,11 +99,10 @@ http://localhost:4040
 docker compose logs -f line-bot
 ```
 
-ถ้าเห็น `STAFF GROUP ID = C...` ให้เอาค่านั้นไปใส่ `LINE_STAFF_GROUP_ID` ใน `.env` แล้ว restart:
+ถ้าเห็น `STAFF GROUP ID = C...` ให้เอาค่านั้นไปใส่ `LINE_STAFF_GROUP_ID` ใน `.env` แล้ว recreate container เพราะ app อ่าน env ตอน start เท่านั้น:
 
 ```powershell
-docker compose down
-docker compose up --build
+docker compose up -d --build --force-recreate
 ```
 
 ถ้าต้องการรันเบื้องหลัง:
@@ -125,6 +124,14 @@ docker compose down
 ```
 
 ## คำสั่งใน LINE Group
+
+ขอตารางเรียนล่าสุด:
+
+```text
+/ตารางเรียน
+```
+
+Bot จะตอบตารางเดียวกับ daily notification โดยใช้ข้อมูลล่าสุดใน mock database ที่ถูกอัพเดท/คอนเฟิร์มระหว่างที่ app กำลังรัน
 
 ```text
 อัพเดทเวลาเรียน/แพรว/แพรวา ศิริพงษ์/English Foundation/วันเสาร์ 9 พฤษภาคม 2569 เวลา 13.00-15.00 น.
