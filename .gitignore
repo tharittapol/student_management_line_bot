@@ -1,0 +1,35 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+dist/
+build/
+
+# Go workspace and coverage
+go.work
+go.work.sum
+coverage.out
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# Docker/local tooling
+.docker/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,27 @@
+services:
+  line-bot:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PORT: "8080"
+      TZ: Asia/Bangkok
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    depends_on:
+      - line-bot
+    command:
+      - http
+      - http://line-bot:8080
+      - --log=stdout
+      - --web-addr=0.0.0.0:4040
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    ports:
+      - "${NGROK_INSPECTOR_PORT:-4040}:4040"
+    restart: unless-stopped
