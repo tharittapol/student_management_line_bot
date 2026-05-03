@@ -15,7 +15,7 @@ Copy-Item .env.example .env
 ```env
 LINE_CHANNEL_SECRET=your_line_channel_secret
 LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
-LINE_STAFF_GROUP_ID=your_line_group_id
+LINE_STAFF_GROUP_ID=
 PORT=8080
 RUN_DAILY_ON_START=false
 HOST_PORT=8080
@@ -23,7 +23,7 @@ NGROK_AUTHTOKEN=your_ngrok_authtoken
 NGROK_INSPECTOR_PORT=4040
 ```
 
-ถ้ายังไม่รู้ `LINE_STAFF_GROUP_ID` ให้เพิ่ม LINE OA เข้า group แล้วส่งข้อความในกลุ่ม 1 ครั้ง จากนั้นดู log บรรทัด `STAFF GROUP ID = ...`
+ถ้ายังไม่รู้ `LINE_STAFF_GROUP_ID` ให้เว้นว่างไว้ก่อน เพิ่ม LINE OA เข้า group แล้วส่งข้อความในกลุ่ม 1 ครั้ง จากนั้นดู log บรรทัด `STAFF GROUP ID = ...`
 
 ## Run แบบ Go local
 

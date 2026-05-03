@@ -19,7 +19,6 @@ services:
       - http
       - http://line-bot:8080
       - --log=stdout
-      - --web-addr=0.0.0.0:4040
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
     ports:

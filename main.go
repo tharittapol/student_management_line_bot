@@ -63,8 +63,8 @@ func NewLineClient() *LineClient {
 }
 
 func (c *LineClient) SendText(to string, text string) error {
-	if strings.TrimSpace(to) == "" {
-		return errors.New("missing LINE target group ID")
+	if !isLikelyLineTargetID(to) {
+		return errors.New("missing or invalid LINE target ID")
 	}
 	return c.send(linePushURL, map[string]any{
 		"to":       to,
@@ -481,8 +481,8 @@ func nextDailyRun(now time.Time, hour int, minute int) time.Time {
 
 func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Location) error {
 	targetGroupID := strings.TrimSpace(lineClient.defaultGroupID)
-	if targetGroupID == "" {
-		return errors.New("missing LINE_STAFF_GROUP_ID for daily notification")
+	if !isLikelyLineTargetID(targetGroupID) {
+		return errors.New("missing or invalid LINE_STAFF_GROUP_ID for daily notification")
 	}
 
 	message := formatDailyLessons(store.ListLessons(), time.Now().In(loc))
@@ -492,6 +492,20 @@ func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Loc
 		}
 	}
 	return nil
+}
+
+func isLikelyLineTargetID(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+
+	lowered := strings.ToLower(value)
+	if strings.Contains(lowered, "your_") || strings.Contains(lowered, "example") || strings.Contains(lowered, "placeholder") {
+		return false
+	}
+
+	return strings.HasPrefix(value, "C") || strings.HasPrefix(value, "R") || strings.HasPrefix(value, "U")
 }
 
 func splitLongLineMessage(text string, maxLength int) []string {
