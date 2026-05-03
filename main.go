@@ -132,6 +132,7 @@ type LessonStore interface {
 	ListLessons() []StudentLesson
 	UpdateLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error)
 	ConfirmLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error)
+	FindLessonByNickname(nickname string) (StudentLesson, error)
 }
 
 type MockLessonStore struct {
@@ -324,6 +325,30 @@ func (s *MockLessonStore) ConfirmLesson(nickname, fullName, course, scheduleText
 	return lesson, nil
 }
 
+func (s *MockLessonStore) FindLessonByNickname(nickname string) (StudentLesson, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" {
+		return StudentLesson{}, errors.New("กรุณาระบุชื่อเล่นนักเรียน")
+	}
+
+	var matches []StudentLesson
+	for _, lesson := range s.lessons {
+		if strings.EqualFold(lesson.Nickname, nickname) {
+			matches = append(matches, lesson)
+		}
+	}
+	if len(matches) == 0 {
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนชื่อเล่น %s ใน mock database", nickname)
+	}
+	if len(matches) > 1 {
+		return StudentLesson{}, fmt.Errorf("พบชื่อเล่น %s มากกว่า 1 คน กรุณาใช้คำสั่งแบบเต็ม", nickname)
+	}
+	return matches[0], nil
+}
+
 func applySchedule(lesson StudentLesson, scheduleText string, loc *time.Location) StudentLesson {
 	if start, end, ok := parseSchedule(scheduleText, loc); ok {
 		lesson.NextStart = start
@@ -436,7 +461,14 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 		return commandHelpText(), true, nil
 	}
 	if isScheduleRequestCommand(normalized) {
-		return formatDailyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
+		return formatWeeklyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
+	}
+	if strings.HasPrefix(normalized, "/") {
+		if response, handled, err := processCompactSlashCommand(normalized, store); handled {
+			return response, handled, err
+		}
+	} else {
+		return "", false, nil
 	}
 
 	parts := splitCommandParts(normalized)
@@ -448,7 +480,7 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 	switch action {
 	case "update":
 		if len(parts) < 5 {
-			return "", true, errors.New("คำสั่งอัพเดทเวลาเรียนต้องเป็น: อัพเดทเวลาเรียน/ชื่อเล่น/ชื่อจริง/คอร์ส/วัน วันที่ เวลา")
+			return "", true, errors.New("คำสั่งอัพเดทต้องขึ้นต้นด้วย / เช่น /อัพเดท แพรว 9/5 13:00-15:00")
 		}
 		lesson, err := store.UpdateLesson(parts[1], parts[2], parts[3], parts[4])
 		if err != nil {
@@ -457,7 +489,7 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 		return formatUpdateNotification(lesson), true, nil
 	case "confirm":
 		if len(parts) < 5 {
-			return "", true, errors.New("คำสั่งคอนเฟิร์มเวลาเรียนต้องเป็น: คอนเฟิร์มเวลาเรียน/ชื่อเล่น/ชื่อจริง/คอร์ส/วัน วันที่ เวลา/คอนเฟิร์ม")
+			return "", true, errors.New("คำสั่งคอนเฟิร์มต้องขึ้นต้นด้วย / เช่น /คอนเฟิร์ม แพรว")
 		}
 		if len(parts) >= 6 && !isConfirmWord(parts[5]) {
 			return "", true, errors.New("ท้ายคำสั่งคอนเฟิร์มควรเป็นคำว่า คอนเฟิร์ม หรือ ยืนยัน")
@@ -470,6 +502,95 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 	default:
 		return "", false, nil
 	}
+}
+
+func processCompactSlashCommand(text string, store LessonStore) (string, bool, error) {
+	command, err := parseCompactSlashCommand(text)
+	if err != nil {
+		return "", true, err
+	}
+
+	switch command.Action {
+	case "update":
+		if command.ScheduleText == "" {
+			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น วันที่ เวลา เช่น /อัพเดท แพรว 9/5 13:00-15:00")
+		}
+		lesson, err := store.FindLessonByNickname(command.Nickname)
+		if err != nil {
+			return "", true, err
+		}
+		lesson, err = store.UpdateLesson(lesson.Nickname, lesson.FullName, lesson.Course, command.ScheduleText)
+		if err != nil {
+			return "", true, err
+		}
+		return formatUpdateNotification(lesson), true, nil
+	case "confirm":
+		lesson, err := store.FindLessonByNickname(command.Nickname)
+		if err != nil {
+			return "", true, err
+		}
+		lesson, err = store.ConfirmLesson(lesson.Nickname, lesson.FullName, lesson.Course, command.ScheduleText)
+		if err != nil {
+			return "", true, err
+		}
+		return formatConfirmNotification(lesson), true, nil
+	default:
+		return "", false, nil
+	}
+}
+
+type compactSlashCommand struct {
+	Action       string
+	Nickname     string
+	ScheduleText string
+}
+
+func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
+	text = strings.TrimSpace(strings.TrimPrefix(text, "/"))
+	if text == "" {
+		return compactSlashCommand{}, errors.New("คำสั่งต้องขึ้นต้นด้วย / เช่น /ตารางเรียน")
+	}
+
+	actionText, body, _ := strings.Cut(text, " ")
+	usesSlashSeparator := false
+	if strings.Contains(actionText, "/") {
+		actionText, body, _ = strings.Cut(text, "/")
+		usesSlashSeparator = true
+	}
+
+	action := normalizeAction(actionText)
+	if action == "" {
+		return compactSlashCommand{}, nil
+	}
+
+	body = strings.TrimSpace(strings.TrimLeft(body, "/"))
+	if body == "" {
+		return compactSlashCommand{}, errors.New("กรุณาระบุชื่อเล่นนักเรียน")
+	}
+
+	var nickname string
+	var scheduleText string
+	if usesSlashSeparator {
+		parts := splitCommandParts(body)
+		if len(parts) >= 4 {
+			nickname = parts[0]
+			scheduleText = parts[3]
+		} else {
+			nickname, scheduleText, _ = strings.Cut(body, "/")
+		}
+	} else {
+		fields := strings.Fields(body)
+		if len(fields) > 0 {
+			nickname = fields[0]
+			scheduleText = strings.TrimSpace(strings.TrimPrefix(body, nickname))
+		}
+	}
+
+	return compactSlashCommand{
+		Action:       action,
+		Nickname:     strings.TrimSpace(nickname),
+		ScheduleText: strings.TrimSpace(scheduleText),
+	}, nil
 }
 
 func sendImmediateResponse(lineClient *LineClient, event LineEvent, response string) error {
@@ -499,11 +620,12 @@ func splitCommandParts(text string) []string {
 
 func normalizeAction(action string) string {
 	action = strings.ToLower(strings.TrimSpace(action))
+	action = strings.TrimPrefix(action, "/")
 	action = strings.ReplaceAll(action, " ", "")
 	action = strings.ReplaceAll(action, "์", "")
 
 	switch {
-	case strings.Contains(action, "อัพเดท") || strings.Contains(action, "อัปเดต") || strings.Contains(action, "update") || strings.Contains(action, "เลื่อน"):
+	case strings.Contains(action, "อัพ") || strings.Contains(action, "อัป") || strings.Contains(action, "update") || strings.Contains(action, "เลื่อน"):
 		return "update"
 	case strings.Contains(action, "คอนเฟ") || strings.Contains(action, "confirm") || strings.Contains(action, "ยืนยัน"):
 		return "confirm"
@@ -515,7 +637,7 @@ func normalizeAction(action string) string {
 func isHelpCommand(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = strings.ReplaceAll(text, " ", "")
-	return text == "help" || text == "วิธีใช้" || text == "ตัวอย่างคำสั่ง"
+	return text == "help" || text == "/help" || text == "/วิธีใช้" || text == "วิธีใช้" || text == "ตัวอย่างคำสั่ง"
 }
 
 func isScheduleRequestCommand(text string) bool {
@@ -535,8 +657,9 @@ func commandHelpText() string {
 	return strings.Join([]string{
 		"ตัวอย่างคำสั่ง",
 		"/ตารางเรียน",
-		"อัพเดทเวลาเรียน/แพรว/แพรวา ศิริพงษ์/English Foundation/วันเสาร์ 9 พฤษภาคม 2569 เวลา 13.00-15.00 น.",
-		"คอนเฟิร์มเวลาเรียน/แพรว/แพรวา ศิริพงษ์/English Foundation/วันเสาร์ 9 พฤษภาคม 2569 เวลา 13.00-15.00 น./คอนเฟิร์ม",
+		"/อัพเดท แพรว 9/5 13:00-15:00",
+		"/คอนเฟิร์ม แพรว",
+		"/คอนเฟิร์ม แพรว 9/5 13:00-15:00",
 	}, "\n")
 }
 
@@ -569,10 +692,10 @@ func nextDailyRun(now time.Time, hour int, minute int) time.Time {
 func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Location) error {
 	targetGroupID := strings.TrimSpace(lineClient.defaultGroupID)
 	if !isLikelyLineTargetID(targetGroupID) {
-		return errors.New("missing or invalid LINE_STAFF_GROUP_ID for daily notification")
+		return errors.New("missing or invalid LINE_STAFF_GROUP_ID for weekly notification")
 	}
 
-	message := formatDailyLessons(store.ListLessons(), time.Now().In(loc))
+	message := formatWeeklyLessons(store.ListLessons(), time.Now().In(loc))
 	for _, part := range splitLongLineMessage(message, 4500) {
 		if err := lineClient.SendText(targetGroupID, part); err != nil {
 			return err
@@ -620,55 +743,101 @@ func splitLongLineMessage(text string, maxLength int) []string {
 	return messages
 }
 
-func formatDailyLessons(lessons []StudentLesson, now time.Time) string {
-	if len(lessons) == 0 {
-		return "แจ้งเวลาเรียนประจำวันที่ " + formatThaiDate(now) + "\nยังไม่มีนักเรียนในระบบ"
-	}
+func weekRange(now time.Time) (time.Time, time.Time) {
+	now = now.In(now.Location())
+	weekdayOffset := (int(now.Weekday()) + 6) % 7
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -weekdayOffset)
+	return start, start.AddDate(0, 0, 7)
+}
+
+func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
+	weekStart, weekEnd := weekRange(now)
+	weeklyLessons := filterLessonsInRange(lessons, weekStart, weekEnd)
 
 	var b strings.Builder
-	b.WriteString("แจ้งเวลาเรียนประจำวันที่ ")
-	b.WriteString(formatThaiDate(now))
-	b.WriteString("\n")
+	b.WriteString("📚 ตารางเรียนสัปดาห์นี้\n")
+	b.WriteString(formatThaiDateRange(weekStart, weekEnd.AddDate(0, 0, -1)))
 
-	for i, lesson := range lessons {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(formatDailyLessonLine(lesson))
+	if len(weeklyLessons) == 0 {
+		b.WriteString("\n\nยังไม่มีตารางเรียนในสัปดาห์นี้")
+		return b.String()
+	}
+
+	for _, lesson := range weeklyLessons {
+		b.WriteString("\n\n")
+		b.WriteString(formatCompactLessonLine(lesson))
 	}
 	return b.String()
 }
 
-func formatDailyLessonLine(lesson StudentLesson) string {
+func filterLessonsInRange(lessons []StudentLesson, start time.Time, end time.Time) []StudentLesson {
+	filtered := make([]StudentLesson, 0, len(lessons))
+	for _, lesson := range lessons {
+		if !lesson.NextStart.Before(start) && lesson.NextStart.Before(end) {
+			filtered = append(filtered, lesson)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return filtered[i].NextStart.Before(filtered[j].NextStart)
+	})
+	return filtered
+}
+
+func formatCompactLessonLine(lesson StudentLesson) string {
 	return fmt.Sprintf(
-		"%s / %s / %s / %s / เหลือ %d ชั่วโมง / %s",
+		"%s %s (%s) | %s\n%s | %s | เหลือ %d ชม.",
+		confirmEmoji(lesson),
 		lesson.Nickname,
 		lesson.FullName,
 		lesson.Course,
-		nextHourLabel(lesson),
+		formatShortLessonTime(lesson.NextStart, lesson.NextEnd),
+		shortHourLabel(lesson),
 		remainingHours(lesson),
-		confirmStatus(lesson),
 	)
 }
 
 func formatUpdateNotification(lesson StudentLesson) string {
-	return fmt.Sprintf(
-		"อัพเดทเวลาเรียน\n%s / %s / %s / %s",
-		lesson.Nickname,
-		lesson.FullName,
-		lesson.Course,
-		lesson.ScheduleText,
-	)
+	return "🔄 อัพเดทเวลาเรียน\n" + formatCompactLessonLine(lesson)
 }
 
 func formatConfirmNotification(lesson StudentLesson) string {
+	return "✅ คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
+}
+
+func confirmEmoji(lesson StudentLesson) string {
+	if lesson.Confirmed {
+		return "✅"
+	}
+	return "⏳"
+}
+
+func formatShortLessonTime(start time.Time, end time.Time) string {
 	return fmt.Sprintf(
-		"คอนเฟิร์มเวลาเรียน\n%s / %s / %s / %s / คอนเฟิร์ม",
-		lesson.Nickname,
-		lesson.FullName,
-		lesson.Course,
-		lesson.ScheduleText,
+		"%s %d %s %02d:%02d-%02d:%02d",
+		thaiShortWeekdays[start.Weekday()],
+		start.Day(),
+		thaiShortMonths[start.Month()-1],
+		start.Hour(),
+		start.Minute(),
+		end.Hour(),
+		end.Minute(),
 	)
+}
+
+func shortHourLabel(lesson StudentLesson) string {
+	if lesson.CompletedHours >= lesson.TotalHours {
+		return "ครบแล้ว"
+	}
+
+	start := lesson.CompletedHours + 1
+	end := start + lesson.SessionHours - 1
+	if end > lesson.TotalHours {
+		end = lesson.TotalHours
+	}
+	if start == end {
+		return fmt.Sprintf("ชม.%d", start)
+	}
+	return fmt.Sprintf("ชม.%d-%d", start, end)
 }
 
 func nextHourLabel(lesson StudentLesson) string {
@@ -727,9 +896,47 @@ var thaiMonths = []string{
 	"ธันวาคม",
 }
 
+var thaiShortWeekdays = []string{
+	"อา.",
+	"จ.",
+	"อ.",
+	"พ.",
+	"พฤ.",
+	"ศ.",
+	"ส.",
+}
+
+var thaiShortMonths = []string{
+	"ม.ค.",
+	"ก.พ.",
+	"มี.ค.",
+	"เม.ย.",
+	"พ.ค.",
+	"มิ.ย.",
+	"ก.ค.",
+	"ส.ค.",
+	"ก.ย.",
+	"ต.ค.",
+	"พ.ย.",
+	"ธ.ค.",
+}
+
 func formatThaiDate(t time.Time) string {
 	t = t.In(t.Location())
 	return fmt.Sprintf("วัน%s %d %s %d", thaiWeekdays[t.Weekday()], t.Day(), thaiMonths[t.Month()-1], t.Year()+543)
+}
+
+func formatThaiDateRange(start time.Time, end time.Time) string {
+	start = start.In(start.Location())
+	end = end.In(start.Location())
+
+	if start.Year() == end.Year() && start.Month() == end.Month() {
+		return fmt.Sprintf("%d-%d %s %d", start.Day(), end.Day(), thaiShortMonths[start.Month()-1], start.Year()+543)
+	}
+	if start.Year() == end.Year() {
+		return fmt.Sprintf("%d %s-%d %s %d", start.Day(), thaiShortMonths[start.Month()-1], end.Day(), thaiShortMonths[end.Month()-1], start.Year()+543)
+	}
+	return fmt.Sprintf("%d %s %d-%d %s %d", start.Day(), thaiShortMonths[start.Month()-1], start.Year()+543, end.Day(), thaiShortMonths[end.Month()-1], end.Year()+543)
 }
 
 func formatThaiSchedule(start time.Time, end time.Time) string {
@@ -779,7 +986,7 @@ func parseISODateSchedule(text string, loc *time.Location) (time.Time, time.Time
 }
 
 func parseSlashDateSchedule(text string, loc *time.Location) (time.Time, time.Time, bool) {
-	re := regexp.MustCompile(`(\d{1,2})[/-](\d{1,2})[/-](\d{2,4}).*?(\d{1,2})[:.](\d{2})\s*[-–]\s*(\d{1,2})[:.](\d{2})`)
+	re := regexp.MustCompile(`(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?.*?(\d{1,2})[:.](\d{2})\s*[-–]\s*(\d{1,2})[:.](\d{2})`)
 	matches := re.FindStringSubmatch(text)
 	if len(matches) != 8 {
 		return time.Time{}, time.Time{}, false
@@ -787,12 +994,22 @@ func parseSlashDateSchedule(text string, loc *time.Location) (time.Time, time.Ti
 
 	day := mustAtoi(matches[1])
 	month := time.Month(mustAtoi(matches[2]))
-	year := normalizeYear(mustAtoi(matches[3]))
+	year := time.Now().In(loc).Year()
+	if strings.TrimSpace(matches[3]) != "" {
+		year = normalizeYear(mustAtoi(matches[3]))
+	}
 	startHour := mustAtoi(matches[4])
 	startMinute := mustAtoi(matches[5])
 	endHour := mustAtoi(matches[6])
 	endMinute := mustAtoi(matches[7])
-	return buildSchedule(year, month, day, startHour, startMinute, endHour, endMinute, loc)
+	start, end, ok := buildSchedule(year, month, day, startHour, startMinute, endHour, endMinute, loc)
+	if !ok {
+		return time.Time{}, time.Time{}, false
+	}
+	if strings.TrimSpace(matches[3]) == "" && start.Before(time.Now().In(loc).Add(-24*time.Hour)) {
+		return buildSchedule(year+1, month, day, startHour, startMinute, endHour, endMinute, loc)
+	}
+	return start, end, true
 }
 
 func parseThaiDateSchedule(text string, loc *time.Location) (time.Time, time.Time, bool) {
