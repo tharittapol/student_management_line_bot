@@ -1,6 +1,6 @@
 # Student Management LINE Bot
 
-LINE bot สำหรับแจ้งเวลาเรียน, อัพเดทเวลาเรียน และคอนเฟิร์มเวลาเรียนจากข้อมูล mock database ใน `main.go`
+LINE bot สำหรับแจ้งตารางเรียน 7 วันข้างหน้า, อัพเดทเวลาเรียน, คอนเฟิร์ม/ไม่คอนเฟิร์มเวลาเรียน และส่ง routine notification ไปยังหลาย LINE group
 
 ## Env
 
@@ -10,111 +10,72 @@ LINE bot สำหรับแจ้งเวลาเรียน, อัพเ
 Copy-Item .env.example .env
 ```
 
-แล้วแก้ค่าใน `.env`:
+ค่าหลักที่ต้องแก้:
 
 ```env
 LINE_CHANNEL_SECRET=your_line_channel_secret
 LINE_CHANNEL_ACCESS_TOKEN=your_line_channel_access_token
+LINE_GROUP_IDS=Cxxxxxxxxxxxxxxxx,Cyyyyyyyyyyyyyyyy
 LINE_STAFF_GROUP_ID=
-PORT=8080
+
+POSTGRES_DB=linebot
+POSTGRES_USER=linebot
+POSTGRES_PASSWORD=linebot_password
+POSTGRES_PORT=5432
+
 RUN_DAILY_ON_START=false
 HOST_PORT=8080
 NGROK_AUTHTOKEN=your_ngrok_authtoken
 NGROK_INSPECTOR_PORT=4040
 ```
 
-ถ้ายังไม่รู้ `LINE_STAFF_GROUP_ID` ให้เว้นว่างไว้ก่อน เพิ่ม LINE OA เข้า group แล้วส่งข้อความในกลุ่ม 1 ครั้ง จากนั้นดู log บรรทัด `STAFF GROUP ID = ...`
+ใส่ group ที่ต้องการให้ bot ทำงานใน `LINE_GROUP_IDS` คั่นด้วย comma เช่น:
 
-## Run แบบ Go local
-
-```powershell
-go test .
-go run .
+```env
+LINE_GROUP_IDS=Cgroup1,Cgroup2,Cgroup3
 ```
 
-Server จะรันที่:
+ถ้ามี `LINE_GROUP_IDS` แล้ว bot จะอ่านคำสั่งเฉพาะ group ที่อยู่ใน env และ routine 09:00 จะส่งตารางไปเฉพาะ group เหล่านั้น ส่วน `LINE_STAFF_GROUP_ID` ยังรองรับของเดิมไว้เป็น fallback แต่แนะนำให้ใช้ `LINE_GROUP_IDS`
 
-```text
-http://localhost:8080/line/webhook
-```
-
-ถ้าจะทดสอบ webhook จาก LINE จริง ให้ expose เครื่อง local ผ่าน tunnel เช่น ngrok แล้วตั้ง Webhook URL ใน LINE Developers เป็น:
-
-```text
-https://your-domain.example/line/webhook
-```
-
-## Run แบบ Docker
-
-Build image:
-
-```powershell
-docker build -t student-management-line-bot .
-```
-
-Run container:
-
-```powershell
-docker run --rm --env-file .env -p 8080:8080 student-management-line-bot
-```
-
-## Run แบบ Docker Compose
+## Run ด้วย Docker Compose
 
 ```powershell
 docker compose up --build
 ```
 
-Compose จะรันทั้ง `line-bot` และ `ngrok` ให้พร้อมกัน โดย ngrok จะ tunnel เข้า service ภายใน Docker ที่ `http://line-bot:8080`
+Compose จะรัน:
 
-ดู public HTTPS URL ของ ngrok:
+- `postgres`: database จริง พร้อม schema และ seed จากไฟล์ CSV ที่แนบมา
+- `line-bot`: Go app
+- `ngrok`: HTTPS tunnel สำหรับ LINE webhook ตอนรัน local
+
+ดู URL ของ ngrok:
 
 ```powershell
 docker compose logs -f ngrok
 ```
 
-มองหาบรรทัดที่มี `url=https://...ngrok...` แล้วเอา URL นั้นไปต่อ path webhook:
+เอา URL ที่ได้ไปตั้งใน LINE Developers:
 
 ```text
 https://your-ngrok-url.ngrok-free.app/line/webhook
 ```
 
-หรือเปิด ngrok inspector ใน browser:
+แล้วเปิด:
 
-```text
-http://localhost:4040
-```
+- `Use webhook`
+- `Allow bot to join group chats`
 
-แล้วตั้งค่าใน LINE Developers Console:
-
-1. เปิด Messaging API channel ของ bot
-2. ไปที่แท็บ `Messaging API`
-3. ตั้ง `Webhook URL` เป็น `https://your-ngrok-url.ngrok-free.app/line/webhook`
-4. กด `Verify`
-5. เปิด `Use webhook`
-6. เปิด `Allow bot to join group chats`
-
-หลังจากนั้นส่งข้อความอะไรก็ได้ใน LINE group แล้วดู log:
+ดู log bot:
 
 ```powershell
 docker compose logs -f line-bot
 ```
 
-ถ้าเห็น `STAFF GROUP ID = C...` ให้เอาค่านั้นไปใส่ `LINE_STAFF_GROUP_ID` ใน `.env` แล้ว recreate container เพราะ app อ่าน env ตอน start เท่านั้น:
+ถ้าต้อง rebuild หลังแก้โค้ด:
 
 ```powershell
 docker compose up -d --build --force-recreate
-```
-
-ถ้าต้องการรันเบื้องหลัง:
-
-```powershell
-docker compose up -d --build
-```
-
-ดู log:
-
-```powershell
-docker compose logs -f line-bot
 ```
 
 หยุด service:
@@ -123,32 +84,102 @@ docker compose logs -f line-bot
 docker compose down
 ```
 
+ถ้าต้องการล้าง database volume แล้ว seed ใหม่จาก `db/*.sql`:
+
+```powershell
+docker compose down -v
+docker compose up --build
+```
+
+## Database
+
+Schema อยู่ที่:
+
+```text
+db/schema.sql
+```
+
+Seed จาก CSV อยู่ที่:
+
+```text
+db/seed_kmutt_smart_kid_students.sql
+```
+
+โครงสร้างหลัก:
+
+- `courses`: ข้อมูลคอร์ส
+- `students`: นักเรียนและข้อมูลผู้ปกครอง
+- `enrollments`: นักเรียนเรียนคอร์สไหน ชั่วโมงรวม/ชั่วโมงที่เรียนไปแล้ว
+- `lesson_sessions`: ตารางเรียนแต่ละครั้งและสถานะ `confirmed` / `unconfirmed`
+- `line_groups`: LINE group ที่ bot เคยเห็น เพื่อส่ง routine notification ทุก group
+
+ความสัมพันธ์:
+
+```text
+students 1 -- * enrollments * -- 1 courses
+enrollments 1 -- * lesson_sessions
+line_groups แยกสำหรับปลายทางแจ้งเตือน
+```
+
 ## คำสั่งใน LINE Group
 
-ขอตารางเรียนล่าสุด:
+ขอตารางเรียน 7 วันข้างหน้า:
 
 ```text
 /ตารางเรียน
 ```
 
-Bot จะตอบตารางเรียนของสัปดาห์นี้ โดยใช้ข้อมูลล่าสุดใน mock database ที่ถูกอัพเดท/คอนเฟิร์มระหว่างที่ app กำลังรัน
-
-อัพเดทเวลาเรียนแบบสั้น:
+อัพเดทเวลาเรียน:
 
 ```text
-/อัพเดท แพรว 9/5 13:00-15:00
+/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ
+/อัพเดท แพรว แพรวา 9/5 13:00-15:00
 ```
 
-คอนเฟิร์มเวลาเรียนเดิม:
+เพิ่มนักเรียน:
 
 ```text
-/คอนเฟิร์ม แพรว
+/เพิ่มนักเรียน ชื่อเล่น ชื่อจริง/คอร์ส/ชั่วโมงรวม
+/เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8
 ```
 
-คอนเฟิร์มพร้อมเปลี่ยนเวลา:
+คอนเฟิร์ม:
 
 ```text
-/คอนเฟิร์ม แพรว 9/5 13:00-15:00
+/คอนเฟิร์ม แพรว แพรวา
 ```
 
-ระบบจะแจ้งตารางเรียนของสัปดาห์นั้นทุกวันเวลา 09:00 ตามเวลา `Asia/Bangkok`
+ไม่คอนเฟิร์ม:
+
+```text
+/ไม่คอนเฟิร์ม แพรว แพรวา
+```
+
+คอนเฟิร์มหรือไม่คอนเฟิร์มพร้อมเปลี่ยนเวลา:
+
+```text
+/คอนเฟิร์ม แพรว แพรวา 9/5/2570 13:00-15:00
+/ไม่คอนเฟิร์ม แพรว แพรวา 9/5 13:00-15:00
+```
+
+กติกาปี:
+
+- ใส่แค่ `วัน/เดือน` เช่น `9/5` = ปีปัจจุบัน
+- ใส่ปีด้วย เช่น `9/5/2570` = ใช้ปีที่ระบุ
+
+ระบบจะแจ้งตารางเรียน 7 วันข้างหน้าทุกวันเวลา 09:00 ตามเวลา `Asia/Bangkok`
+
+## Run แบบ Go Local
+
+ถ้าไม่ได้ตั้ง `DATABASE_URL` app จะ fallback เป็น mock in-memory store:
+
+```powershell
+go test .
+go run .
+```
+
+Webhook path:
+
+```text
+http://localhost:8080/line/webhook
+```

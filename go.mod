@@ -1,3 +1,5 @@
 module student_management_line_bot
 
 go 1.22
+
+require github.com/lib/pq v1.10.9

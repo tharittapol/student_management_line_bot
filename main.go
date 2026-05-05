@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/lib/pq"
 )
 
 const (
@@ -46,6 +49,7 @@ type LineEvent struct {
 type LineClient struct {
 	accessToken    string
 	defaultGroupID string
+	targetGroupIDs []string
 	httpClient     *http.Client
 }
 
@@ -55,11 +59,60 @@ type lineTextMessage struct {
 }
 
 func NewLineClient() *LineClient {
+	defaultGroupID := strings.TrimSpace(os.Getenv("LINE_STAFF_GROUP_ID"))
 	return &LineClient{
 		accessToken:    os.Getenv("LINE_CHANNEL_ACCESS_TOKEN"),
-		defaultGroupID: os.Getenv("LINE_STAFF_GROUP_ID"),
+		defaultGroupID: defaultGroupID,
+		targetGroupIDs: parseLineGroupIDs(os.Getenv("LINE_GROUP_IDS"), defaultGroupID),
 		httpClient:     &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+func parseLineGroupIDs(values ...string) []string {
+	seen := map[string]bool{}
+	var groupIDs []string
+	for _, value := range values {
+		for _, groupID := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+		}) {
+			groupID = strings.TrimSpace(groupID)
+			if !strings.HasPrefix(groupID, "C") || !isLikelyLineTargetID(groupID) || seen[groupID] {
+				continue
+			}
+			seen[groupID] = true
+			groupIDs = append(groupIDs, groupID)
+		}
+	}
+	return groupIDs
+}
+
+func (c *LineClient) TargetGroupIDs() []string {
+	groupIDs := make([]string, len(c.targetGroupIDs))
+	copy(groupIDs, c.targetGroupIDs)
+	return groupIDs
+}
+
+func (c *LineClient) AllowsGroup(groupID string) bool {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return true
+	}
+	if len(c.targetGroupIDs) == 0 {
+		return true
+	}
+	for _, targetGroupID := range c.targetGroupIDs {
+		if targetGroupID == groupID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *LineClient) FirstTargetGroupID() string {
+	if len(c.targetGroupIDs) == 0 {
+		return ""
+	}
+	return c.targetGroupIDs[0]
 }
 
 func (c *LineClient) SendText(to string, text string) error {
@@ -116,6 +169,7 @@ func (c *LineClient) send(url string, payload map[string]any) error {
 type StudentLesson struct {
 	ID             string
 	Nickname       string
+	FirstName      string
 	FullName       string
 	Course         string
 	TotalHours     int
@@ -130,20 +184,26 @@ type StudentLesson struct {
 
 type LessonStore interface {
 	ListLessons() []StudentLesson
-	UpdateLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error)
-	ConfirmLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error)
-	FindLessonByNickname(nickname string) (StudentLesson, error)
+	AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error)
+	UpdateLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
+	ConfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
+	UnconfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
+	FindLessonByStudentName(nickname, firstName string) (StudentLesson, error)
+	RegisterLineGroup(groupID string) error
+	ListLineGroupIDs() ([]string, error)
 }
 
 type MockLessonStore struct {
 	mu      sync.RWMutex
 	lessons map[string]StudentLesson
+	groups  map[string]bool
 	loc     *time.Location
 }
 
 func NewMockLessonStore(loc *time.Location) *MockLessonStore {
 	store := &MockLessonStore{
 		lessons: map[string]StudentLesson{},
+		groups:  map[string]bool{},
 		loc:     loc,
 	}
 
@@ -271,8 +331,11 @@ func (s *MockLessonStore) seed(lesson StudentLesson) {
 	if strings.TrimSpace(lesson.ScheduleText) == "" {
 		lesson.ScheduleText = formatThaiSchedule(lesson.NextStart, lesson.NextEnd)
 	}
+	if strings.TrimSpace(lesson.FirstName) == "" {
+		lesson.FirstName = firstWord(lesson.FullName)
+	}
 	lesson.UpdatedAt = time.Now().In(s.loc)
-	s.lessons[lessonKey(lesson.Nickname, lesson.FullName, lesson.Course)] = lesson
+	s.lessons[studentNameKey(lesson.Nickname, lesson.FirstName)] = lesson
 }
 
 func (s *MockLessonStore) ListLessons() []StudentLesson {
@@ -289,14 +352,47 @@ func (s *MockLessonStore) ListLessons() []StudentLesson {
 	return lessons
 }
 
-func (s *MockLessonStore) UpdateLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error) {
+func (s *MockLessonStore) AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := lessonKey(nickname, fullName, course)
+	nickname = strings.TrimSpace(nickname)
+	firstName = strings.TrimSpace(firstName)
+	course = strings.TrimSpace(course)
+	if nickname == "" || firstName == "" || course == "" {
+		return StudentLesson{}, errors.New("กรุณาระบุชื่อเล่น ชื่อจริง และคอร์ส")
+	}
+	if totalHours <= 0 {
+		totalHours = 8
+	}
+
+	lesson := StudentLesson{
+		ID:             fmt.Sprintf("mock-%d", len(s.lessons)+1),
+		Nickname:       nickname,
+		FirstName:      firstName,
+		FullName:       firstName,
+		Course:         course,
+		TotalHours:     totalHours,
+		CompletedHours: 0,
+		SessionHours:   2,
+		Confirmed:      false,
+		UpdatedAt:      time.Now().In(s.loc),
+	}
+	if strings.TrimSpace(scheduleText) != "" {
+		lesson = applySchedule(lesson, scheduleText, s.loc)
+	}
+	s.lessons[studentNameKey(lesson.Nickname, lesson.FirstName)] = lesson
+	return lesson, nil
+}
+
+func (s *MockLessonStore) UpdateLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := studentNameKey(nickname, firstName)
 	lesson, ok := s.lessons[key]
 	if !ok {
-		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s / %s", nickname, fullName, course)
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
 	}
 
 	lesson = applySchedule(lesson, scheduleText, s.loc)
@@ -306,14 +402,14 @@ func (s *MockLessonStore) UpdateLesson(nickname, fullName, course, scheduleText 
 	return lesson, nil
 }
 
-func (s *MockLessonStore) ConfirmLesson(nickname, fullName, course, scheduleText string) (StudentLesson, error) {
+func (s *MockLessonStore) ConfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	key := lessonKey(nickname, fullName, course)
+	key := studentNameKey(nickname, firstName)
 	lesson, ok := s.lessons[key]
 	if !ok {
-		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s / %s", nickname, fullName, course)
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
 	}
 
 	if strings.TrimSpace(scheduleText) != "" {
@@ -325,28 +421,478 @@ func (s *MockLessonStore) ConfirmLesson(nickname, fullName, course, scheduleText
 	return lesson, nil
 }
 
-func (s *MockLessonStore) FindLessonByNickname(nickname string) (StudentLesson, error) {
+func (s *MockLessonStore) UnconfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := studentNameKey(nickname, firstName)
+	lesson, ok := s.lessons[key]
+	if !ok {
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
+	}
+
+	if strings.TrimSpace(scheduleText) != "" {
+		lesson = applySchedule(lesson, scheduleText, s.loc)
+	}
+	lesson.Confirmed = false
+	lesson.UpdatedAt = time.Now().In(s.loc)
+	s.lessons[key] = lesson
+	return lesson, nil
+}
+
+func (s *MockLessonStore) FindLessonByStudentName(nickname, firstName string) (StudentLesson, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	nickname = strings.TrimSpace(nickname)
-	if nickname == "" {
-		return StudentLesson{}, errors.New("กรุณาระบุชื่อเล่นนักเรียน")
+	lesson, ok := s.lessons[studentNameKey(nickname, firstName)]
+	if !ok {
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
+	}
+	return lesson, nil
+}
+
+func (s *MockLessonStore) RegisterLineGroup(groupID string) error {
+	if !isLikelyLineTargetID(groupID) || !strings.HasPrefix(strings.TrimSpace(groupID), "C") {
+		return nil
 	}
 
-	var matches []StudentLesson
-	for _, lesson := range s.lessons {
-		if strings.EqualFold(lesson.Nickname, nickname) {
-			matches = append(matches, lesson)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.groups[strings.TrimSpace(groupID)] = true
+	return nil
+}
+
+func (s *MockLessonStore) ListLineGroupIDs() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	groupIDs := make([]string, 0, len(s.groups))
+	for groupID := range s.groups {
+		groupIDs = append(groupIDs, groupID)
+	}
+	sort.Strings(groupIDs)
+	return groupIDs, nil
+}
+
+type PostgresLessonStore struct {
+	db  *sql.DB
+	loc *time.Location
+}
+
+func NewPostgresLessonStore(databaseURL string, loc *time.Location) (*PostgresLessonStore, error) {
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+
+	store := &PostgresLessonStore{db: db, loc: loc}
+	if err := store.waitForDatabase(30 * time.Second); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *PostgresLessonStore) waitForDatabase(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var err error
+	for time.Now().Before(deadline) {
+		if err = s.db.Ping(); err == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return err
+}
+
+func (s *PostgresLessonStore) Migrate(schemaPath string) error {
+	schema, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(string(schema))
+	return err
+}
+
+func (s *PostgresLessonStore) ListLessons() []StudentLesson {
+	rows, err := s.db.Query(`
+		SELECT
+			ls.id::text,
+			st.nickname,
+			st.first_name,
+			COALESCE(st.full_name_th, ''),
+			c.name,
+			e.total_hours,
+			e.completed_hours,
+			GREATEST(1, CEIL(EXTRACT(EPOCH FROM (ls.end_at - ls.start_at)) / 3600.0)::int),
+			ls.start_at,
+			ls.end_at,
+			ls.status = 'confirmed',
+			ls.updated_at
+		FROM lesson_sessions ls
+		JOIN enrollments e ON e.id = ls.enrollment_id
+		JOIN students st ON st.id = e.student_id
+		JOIN courses c ON c.id = e.course_id
+		WHERE e.active = true
+		  AND ls.status <> 'cancelled'
+		  AND ls.start_at >= (NOW() - INTERVAL '30 days')
+		  AND ls.start_at < (NOW() + INTERVAL '365 days')
+		ORDER BY ls.start_at, st.nickname
+	`)
+	if err != nil {
+		log.Println("list lessons query error:", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var lessons []StudentLesson
+	for rows.Next() {
+		var lesson StudentLesson
+		if err := rows.Scan(
+			&lesson.ID,
+			&lesson.Nickname,
+			&lesson.FirstName,
+			&lesson.FullName,
+			&lesson.Course,
+			&lesson.TotalHours,
+			&lesson.CompletedHours,
+			&lesson.SessionHours,
+			&lesson.NextStart,
+			&lesson.NextEnd,
+			&lesson.Confirmed,
+			&lesson.UpdatedAt,
+		); err != nil {
+			log.Println("scan lesson error:", err)
+			continue
+		}
+		lesson.NextStart = lesson.NextStart.In(s.loc)
+		lesson.NextEnd = lesson.NextEnd.In(s.loc)
+		lesson.UpdatedAt = lesson.UpdatedAt.In(s.loc)
+		lesson.ScheduleText = formatThaiSchedule(lesson.NextStart, lesson.NextEnd)
+		lessons = append(lessons, lesson)
+	}
+	return lessons
+}
+
+func (s *PostgresLessonStore) AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error) {
+	nickname = strings.TrimSpace(nickname)
+	firstName = strings.TrimSpace(firstName)
+	course = strings.TrimSpace(course)
+	scheduleText = strings.TrimSpace(scheduleText)
+	if nickname == "" || firstName == "" || course == "" {
+		return StudentLesson{}, errors.New("กรุณาระบุชื่อเล่น ชื่อจริง และคอร์ส")
+	}
+	if totalHours <= 0 {
+		totalHours = 8
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	defer tx.Rollback()
+
+	var studentID int64
+	if err := tx.QueryRow(`
+		INSERT INTO students (nickname, first_name, full_name_th)
+		VALUES ($1, $2, $2)
+		ON CONFLICT (nickname, first_name) DO UPDATE SET
+			full_name_th = COALESCE(students.full_name_th, EXCLUDED.full_name_th),
+			updated_at = NOW()
+		RETURNING id
+	`, nickname, firstName).Scan(&studentID); err != nil {
+		return StudentLesson{}, err
+	}
+
+	var courseID int64
+	if err := tx.QueryRow(`
+		INSERT INTO courses (name, default_total_hours, default_session_hours)
+		VALUES ($1, $2, 2)
+		ON CONFLICT (name) DO UPDATE SET
+			default_total_hours = EXCLUDED.default_total_hours,
+			updated_at = NOW()
+		RETURNING id
+	`, course, totalHours).Scan(&courseID); err != nil {
+		return StudentLesson{}, err
+	}
+
+	var enrollmentID int64
+	if err := tx.QueryRow(`
+		INSERT INTO enrollments (student_id, course_id, total_hours, completed_hours, default_session_hours, active)
+		VALUES ($1, $2, $3, 0, 2, true)
+		ON CONFLICT (student_id, course_id) DO UPDATE SET
+			total_hours = EXCLUDED.total_hours,
+			active = true,
+			updated_at = NOW()
+		RETURNING id
+	`, studentID, courseID, totalHours).Scan(&enrollmentID); err != nil {
+		return StudentLesson{}, err
+	}
+
+	var sessionID int64
+	if scheduleText != "" {
+		start, end, ok := parseSchedule(scheduleText, s.loc)
+		if !ok {
+			return StudentLesson{}, fmt.Errorf("อ่านวันเวลาไม่ได้: %s", scheduleText)
+		}
+		if err := tx.QueryRow(`
+			WITH next_sequence AS (
+				SELECT COALESCE(MAX(sequence_no), 0) + 1 AS value
+				FROM lesson_sessions
+				WHERE enrollment_id = $1
+			)
+			INSERT INTO lesson_sessions (enrollment_id, sequence_no, start_at, end_at, status)
+			SELECT $1, value, $2, $3, 'unconfirmed' FROM next_sequence
+			RETURNING id
+		`, enrollmentID, start, end).Scan(&sessionID); err != nil {
+			return StudentLesson{}, err
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return StudentLesson{}, err
+	}
+	if sessionID != 0 {
+		return s.lessonBySessionID(sessionID)
+	}
+	return StudentLesson{
+		ID:             fmt.Sprintf("enrollment-%d", enrollmentID),
+		Nickname:       nickname,
+		FirstName:      firstName,
+		FullName:       firstName,
+		Course:         course,
+		TotalHours:     totalHours,
+		CompletedHours: 0,
+		SessionHours:   2,
+		Confirmed:      false,
+		UpdatedAt:      time.Now().In(s.loc),
+	}, nil
+}
+
+func (s *PostgresLessonStore) UpdateLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
+	return s.changeLesson(nickname, firstName, scheduleText, "unconfirmed", true)
+}
+
+func (s *PostgresLessonStore) ConfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
+	return s.changeLesson(nickname, firstName, scheduleText, "confirmed", false)
+}
+
+func (s *PostgresLessonStore) UnconfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
+	return s.changeLesson(nickname, firstName, scheduleText, "unconfirmed", false)
+}
+
+func (s *PostgresLessonStore) FindLessonByStudentName(nickname, firstName string) (StudentLesson, error) {
+	enrollmentID, err := s.findEnrollmentID(nickname, firstName)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	sessionID, err := s.findEditableSessionID(enrollmentID)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	return s.lessonBySessionID(sessionID)
+}
+
+func (s *PostgresLessonStore) RegisterLineGroup(groupID string) error {
+	groupID = strings.TrimSpace(groupID)
+	if !isLikelyLineTargetID(groupID) || !strings.HasPrefix(groupID, "C") {
+		return nil
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO line_groups (group_id, active, first_seen_at, last_seen_at)
+		VALUES ($1, true, NOW(), NOW())
+		ON CONFLICT (group_id)
+		DO UPDATE SET active = true, last_seen_at = NOW()
+	`, groupID)
+	return err
+}
+
+func (s *PostgresLessonStore) ListLineGroupIDs() ([]string, error) {
+	rows, err := s.db.Query(`SELECT group_id FROM line_groups WHERE active = true ORDER BY group_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groupIDs []string
+	for rows.Next() {
+		var groupID string
+		if err := rows.Scan(&groupID); err != nil {
+			return nil, err
+		}
+		groupIDs = append(groupIDs, groupID)
+	}
+	return groupIDs, rows.Err()
+}
+
+func (s *PostgresLessonStore) changeLesson(nickname, firstName, scheduleText, status string, requireSchedule bool) (StudentLesson, error) {
+	enrollmentID, err := s.findEnrollmentID(nickname, firstName)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+
+	scheduleText = strings.TrimSpace(scheduleText)
+	var start time.Time
+	var end time.Time
+	hasSchedule := false
+	if scheduleText != "" {
+		var ok bool
+		start, end, ok = parseSchedule(scheduleText, s.loc)
+		if !ok {
+			return StudentLesson{}, fmt.Errorf("อ่านวันเวลาไม่ได้: %s", scheduleText)
+		}
+		hasSchedule = true
+	}
+	if requireSchedule && !hasSchedule {
+		return StudentLesson{}, errors.New("กรุณาระบุวันที่และเวลา เช่น 9/5 13:00-15:00")
+	}
+
+	sessionID, err := s.findEditableSessionID(enrollmentID)
+	if err != nil && !hasSchedule {
+		return StudentLesson{}, err
+	}
+	if err != nil && hasSchedule {
+		sessionID, err = s.insertLessonSession(enrollmentID, start, end, status)
+		if err != nil {
+			return StudentLesson{}, err
+		}
+		return s.lessonBySessionID(sessionID)
+	}
+
+	if hasSchedule {
+		_, err = s.db.Exec(`
+			UPDATE lesson_sessions
+			SET start_at = $1, end_at = $2, status = $3, updated_at = NOW()
+			WHERE id = $4
+		`, start, end, status, sessionID)
+	} else {
+		_, err = s.db.Exec(`
+			UPDATE lesson_sessions
+			SET status = $1, updated_at = NOW()
+			WHERE id = $2
+		`, status, sessionID)
+	}
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	return s.lessonBySessionID(sessionID)
+}
+
+func (s *PostgresLessonStore) findEnrollmentID(nickname, firstName string) (int64, error) {
+	rows, err := s.db.Query(`
+		SELECT e.id
+		FROM enrollments e
+		JOIN students st ON st.id = e.student_id
+		WHERE e.active = true
+		  AND lower(st.nickname) = lower($1)
+		  AND lower(st.first_name) = lower($2)
+		ORDER BY e.id
+	`, strings.TrimSpace(nickname), strings.TrimSpace(firstName))
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var matches []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return 0, err
+		}
+		matches = append(matches, id)
+	}
 	if len(matches) == 0 {
-		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนชื่อเล่น %s ใน mock database", nickname)
+		return 0, fmt.Errorf("ไม่พบนักเรียน: %s / %s", nickname, firstName)
 	}
 	if len(matches) > 1 {
-		return StudentLesson{}, fmt.Errorf("พบชื่อเล่น %s มากกว่า 1 คน กรุณาใช้คำสั่งแบบเต็ม", nickname)
+		return 0, fmt.Errorf("พบ %s / %s มากกว่า 1 คอร์ส กรุณาเพิ่มคำสั่งระบุคอร์สในอนาคต", nickname, firstName)
 	}
 	return matches[0], nil
+}
+
+func (s *PostgresLessonStore) findEditableSessionID(enrollmentID int64) (int64, error) {
+	var sessionID int64
+	err := s.db.QueryRow(`
+		SELECT id
+		FROM lesson_sessions
+		WHERE enrollment_id = $1
+		  AND status NOT IN ('completed', 'cancelled')
+		ORDER BY
+		  CASE WHEN start_at >= NOW() THEN 0 ELSE 1 END,
+		  start_at
+		LIMIT 1
+	`, enrollmentID).Scan(&sessionID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, errors.New("ยังไม่มี session ที่แก้ไขได้สำหรับนักเรียนคนนี้")
+		}
+		return 0, err
+	}
+	return sessionID, nil
+}
+
+func (s *PostgresLessonStore) insertLessonSession(enrollmentID int64, start time.Time, end time.Time, status string) (int64, error) {
+	var sessionID int64
+	err := s.db.QueryRow(`
+		WITH next_sequence AS (
+			SELECT COALESCE(MAX(sequence_no), 0) + 1 AS value
+			FROM lesson_sessions
+			WHERE enrollment_id = $1
+		)
+		INSERT INTO lesson_sessions (enrollment_id, sequence_no, start_at, end_at, status)
+		SELECT $1, value, $2, $3, $4 FROM next_sequence
+		RETURNING id
+	`, enrollmentID, start, end, status).Scan(&sessionID)
+	return sessionID, err
+}
+
+func (s *PostgresLessonStore) lessonBySessionID(sessionID int64) (StudentLesson, error) {
+	var lesson StudentLesson
+	err := s.db.QueryRow(`
+		SELECT
+			ls.id::text,
+			st.nickname,
+			st.first_name,
+			COALESCE(st.full_name_th, ''),
+			c.name,
+			e.total_hours,
+			e.completed_hours,
+			GREATEST(1, CEIL(EXTRACT(EPOCH FROM (ls.end_at - ls.start_at)) / 3600.0)::int),
+			ls.start_at,
+			ls.end_at,
+			ls.status = 'confirmed',
+			ls.updated_at
+		FROM lesson_sessions ls
+		JOIN enrollments e ON e.id = ls.enrollment_id
+		JOIN students st ON st.id = e.student_id
+		JOIN courses c ON c.id = e.course_id
+		WHERE ls.id = $1
+	`, sessionID).Scan(
+		&lesson.ID,
+		&lesson.Nickname,
+		&lesson.FirstName,
+		&lesson.FullName,
+		&lesson.Course,
+		&lesson.TotalHours,
+		&lesson.CompletedHours,
+		&lesson.SessionHours,
+		&lesson.NextStart,
+		&lesson.NextEnd,
+		&lesson.Confirmed,
+		&lesson.UpdatedAt,
+	)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	lesson.NextStart = lesson.NextStart.In(s.loc)
+	lesson.NextEnd = lesson.NextEnd.In(s.loc)
+	lesson.UpdatedAt = lesson.UpdatedAt.In(s.loc)
+	lesson.ScheduleText = formatThaiSchedule(lesson.NextStart, lesson.NextEnd)
+	return lesson, nil
 }
 
 func applySchedule(lesson StudentLesson, scheduleText string, loc *time.Location) StudentLesson {
@@ -362,12 +908,19 @@ func applySchedule(lesson StudentLesson, scheduleText string, loc *time.Location
 	return lesson
 }
 
-func lessonKey(nickname, fullName, course string) string {
+func studentNameKey(nickname, firstName string) string {
 	return strings.ToLower(strings.Join([]string{
 		strings.TrimSpace(nickname),
-		strings.TrimSpace(fullName),
-		strings.TrimSpace(course),
+		strings.TrimSpace(firstName),
 	}, "|"))
+}
+
+func firstWord(value string) string {
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return strings.TrimSpace(value)
+	}
+	return fields[0]
 }
 
 func nextWeekdayAt(loc *time.Location, weekday time.Weekday, hour int, minute int) time.Time {
@@ -429,6 +982,13 @@ func lineWebhookHandler(store LessonStore, lineClient *LineClient, loc *time.Loc
 			log.Printf("event=%s source=%s userId=%s groupId=%s text=%q", event.Type, event.Source.Type, event.Source.UserID, event.Source.GroupID, event.Message.Text)
 			if event.Source.GroupID != "" {
 				log.Println("STAFF GROUP ID =", event.Source.GroupID)
+				if !lineClient.AllowsGroup(event.Source.GroupID) {
+					log.Println("ignored LINE group not listed in LINE_GROUP_IDS:", event.Source.GroupID)
+					continue
+				}
+				if err := store.RegisterLineGroup(event.Source.GroupID); err != nil {
+					log.Println("register LINE group error:", err)
+				}
 			}
 			if event.Type != "message" || event.Message.Type != "text" {
 				continue
@@ -467,39 +1027,8 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 		if response, handled, err := processCompactSlashCommand(normalized, store); handled {
 			return response, handled, err
 		}
+		return "", false, nil
 	} else {
-		return "", false, nil
-	}
-
-	parts := splitCommandParts(normalized)
-	if len(parts) == 0 {
-		return "", false, nil
-	}
-
-	action := normalizeAction(parts[0])
-	switch action {
-	case "update":
-		if len(parts) < 5 {
-			return "", true, errors.New("คำสั่งอัพเดทต้องขึ้นต้นด้วย / เช่น /อัพเดท แพรว 9/5 13:00-15:00")
-		}
-		lesson, err := store.UpdateLesson(parts[1], parts[2], parts[3], parts[4])
-		if err != nil {
-			return "", true, err
-		}
-		return formatUpdateNotification(lesson), true, nil
-	case "confirm":
-		if len(parts) < 5 {
-			return "", true, errors.New("คำสั่งคอนเฟิร์มต้องขึ้นต้นด้วย / เช่น /คอนเฟิร์ม แพรว")
-		}
-		if len(parts) >= 6 && !isConfirmWord(parts[5]) {
-			return "", true, errors.New("ท้ายคำสั่งคอนเฟิร์มควรเป็นคำว่า คอนเฟิร์ม หรือ ยืนยัน")
-		}
-		lesson, err := store.ConfirmLesson(parts[1], parts[2], parts[3], parts[4])
-		if err != nil {
-			return "", true, err
-		}
-		return formatConfirmNotification(lesson), true, nil
-	default:
 		return "", false, nil
 	}
 }
@@ -511,29 +1040,36 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 	}
 
 	switch command.Action {
-	case "update":
-		if command.ScheduleText == "" {
-			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น วันที่ เวลา เช่น /อัพเดท แพรว 9/5 13:00-15:00")
+	case "add_student":
+		if command.Course == "" {
+			return "", true, errors.New("คำสั่งเพิ่มนักเรียนต้องเป็น: /เพิ่มนักเรียน ชื่อเล่น ชื่อจริง/คอร์ส/ชั่วโมงรวม เช่น /เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8")
 		}
-		lesson, err := store.FindLessonByNickname(command.Nickname)
+		lesson, err := store.AddStudent(command.Nickname, command.FirstName, command.Course, command.TotalHours, command.ScheduleText)
 		if err != nil {
 			return "", true, err
 		}
-		lesson, err = store.UpdateLesson(lesson.Nickname, lesson.FullName, lesson.Course, command.ScheduleText)
+		return formatAddStudentNotification(lesson), true, nil
+	case "update":
+		if command.ScheduleText == "" {
+			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น ชื่อจริง วันที่ เวลา เช่น /อัพเดท แพรว แพรวา 9/5 13:00-15:00")
+		}
+		lesson, err := store.UpdateLesson(command.Nickname, command.FirstName, command.ScheduleText)
 		if err != nil {
 			return "", true, err
 		}
 		return formatUpdateNotification(lesson), true, nil
 	case "confirm":
-		lesson, err := store.FindLessonByNickname(command.Nickname)
-		if err != nil {
-			return "", true, err
-		}
-		lesson, err = store.ConfirmLesson(lesson.Nickname, lesson.FullName, lesson.Course, command.ScheduleText)
+		lesson, err := store.ConfirmLesson(command.Nickname, command.FirstName, command.ScheduleText)
 		if err != nil {
 			return "", true, err
 		}
 		return formatConfirmNotification(lesson), true, nil
+	case "unconfirm":
+		lesson, err := store.UnconfirmLesson(command.Nickname, command.FirstName, command.ScheduleText)
+		if err != nil {
+			return "", true, err
+		}
+		return formatUnconfirmNotification(lesson), true, nil
 	default:
 		return "", false, nil
 	}
@@ -542,6 +1078,9 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 type compactSlashCommand struct {
 	Action       string
 	Nickname     string
+	FirstName    string
+	Course       string
+	TotalHours   int
 	ScheduleText string
 }
 
@@ -565,32 +1104,94 @@ func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
 
 	body = strings.TrimSpace(strings.TrimLeft(body, "/"))
 	if body == "" {
-		return compactSlashCommand{}, errors.New("กรุณาระบุชื่อเล่นนักเรียน")
+		return compactSlashCommand{}, errors.New("กรุณาระบุชื่อเล่นและชื่อจริงนักเรียน")
 	}
 
-	var nickname string
-	var scheduleText string
+	if action == "add_student" {
+		return parseAddStudentCommand(body)
+	}
+
 	if usesSlashSeparator {
-		parts := splitCommandParts(body)
-		if len(parts) >= 4 {
-			nickname = parts[0]
-			scheduleText = parts[3]
-		} else {
-			nickname, scheduleText, _ = strings.Cut(body, "/")
-		}
-	} else {
-		fields := strings.Fields(body)
-		if len(fields) > 0 {
-			nickname = fields[0]
-			scheduleText = strings.TrimSpace(strings.TrimPrefix(body, nickname))
-		}
+		body = strings.Replace(body, "/", " ", 2)
+	}
+
+	fields := strings.Fields(body)
+	if len(fields) < 2 {
+		return compactSlashCommand{}, errors.New("กรุณาระบุเป็น ชื่อเล่น ชื่อจริง เช่น /คอนเฟิร์ม แพรว แพรวา")
+	}
+
+	nickname := fields[0]
+	firstName := fields[1]
+	scheduleText := ""
+	if len(fields) > 2 {
+		scheduleText = strings.Join(fields[2:], " ")
 	}
 
 	return compactSlashCommand{
 		Action:       action,
 		Nickname:     strings.TrimSpace(nickname),
+		FirstName:    strings.TrimSpace(firstName),
 		ScheduleText: strings.TrimSpace(scheduleText),
 	}, nil
+}
+
+func parseAddStudentCommand(body string) (compactSlashCommand, error) {
+	nickname, firstName, rest, err := parseTwoNamesAndRest(body)
+	if err != nil {
+		return compactSlashCommand{}, err
+	}
+
+	parts := strings.Split(rest, "/")
+	course := ""
+	totalHours := 8
+	scheduleText := ""
+	if len(parts) > 0 {
+		course = strings.TrimSpace(parts[0])
+	}
+	if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
+		parsedHours, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+		if err != nil {
+			return compactSlashCommand{}, errors.New("ชั่วโมงรวมต้องเป็นตัวเลข เช่น 8 หรือ 20")
+		}
+		totalHours = parsedHours
+	}
+	if len(parts) > 2 {
+		scheduleText = strings.TrimSpace(strings.Join(parts[2:], "/"))
+	}
+	if course == "" {
+		return compactSlashCommand{}, errors.New("กรุณาระบุคอร์สหลัง / เช่น /เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8")
+	}
+	return compactSlashCommand{
+		Action:       "add_student",
+		Nickname:     nickname,
+		FirstName:    firstName,
+		Course:       course,
+		TotalHours:   totalHours,
+		ScheduleText: scheduleText,
+	}, nil
+}
+
+func parseTwoNamesAndRest(body string) (string, string, string, error) {
+	fields := strings.Fields(strings.TrimSpace(body))
+	if len(fields) < 2 {
+		return "", "", "", errors.New("กรุณาระบุเป็น ชื่อเล่น ชื่อจริง")
+	}
+
+	nickname := fields[0]
+	afterNickname := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body), nickname))
+	firstName := ""
+	rest := ""
+	if slashIndex := strings.Index(afterNickname, "/"); slashIndex >= 0 {
+		firstName = strings.TrimSpace(afterNickname[:slashIndex])
+		rest = strings.TrimSpace(strings.TrimLeft(afterNickname[slashIndex:], "/"))
+	} else {
+		firstName = fields[1]
+		rest = strings.TrimSpace(strings.TrimPrefix(afterNickname, firstName))
+	}
+	if firstName == "" {
+		return "", "", "", errors.New("กรุณาระบุชื่อจริง")
+	}
+	return strings.TrimSpace(nickname), strings.TrimSpace(firstName), strings.TrimSpace(rest), nil
 }
 
 func sendImmediateResponse(lineClient *LineClient, event LineEvent, response string) error {
@@ -603,7 +1204,7 @@ func sendImmediateResponse(lineClient *LineClient, event LineEvent, response str
 	if strings.TrimSpace(event.Source.GroupID) != "" {
 		return lineClient.SendText(event.Source.GroupID, response)
 	}
-	return lineClient.SendText(lineClient.defaultGroupID, response)
+	return lineClient.SendText(lineClient.FirstTargetGroupID(), response)
 }
 
 func splitCommandParts(text string) []string {
@@ -625,6 +1226,10 @@ func normalizeAction(action string) string {
 	action = strings.ReplaceAll(action, "์", "")
 
 	switch {
+	case strings.Contains(action, "เพิ่มนักเรียน") || strings.Contains(action, "addstudent") || strings.Contains(action, "add_student"):
+		return "add_student"
+	case strings.Contains(action, "ไม่คอนเฟ") || strings.Contains(action, "unconfirm") || strings.Contains(action, "notconfirm"):
+		return "unconfirm"
 	case strings.Contains(action, "อัพ") || strings.Contains(action, "อัป") || strings.Contains(action, "update") || strings.Contains(action, "เลื่อน"):
 		return "update"
 	case strings.Contains(action, "คอนเฟ") || strings.Contains(action, "confirm") || strings.Contains(action, "ยืนยัน"):
@@ -657,9 +1262,11 @@ func commandHelpText() string {
 	return strings.Join([]string{
 		"ตัวอย่างคำสั่ง",
 		"/ตารางเรียน",
-		"/อัพเดท แพรว 9/5 13:00-15:00",
-		"/คอนเฟิร์ม แพรว",
-		"/คอนเฟิร์ม แพรว 9/5 13:00-15:00",
+		"/เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8",
+		"/อัพเดท แพรว แพรวา 9/5 13:00-15:00",
+		"/คอนเฟิร์ม แพรว แพรวา",
+		"/ไม่คอนเฟิร์ม แพรว แพรวา",
+		"/คอนเฟิร์ม แพรว แพรวา 9/5/2570 13:00-15:00",
 	}, "\n")
 }
 
@@ -690,15 +1297,24 @@ func nextDailyRun(now time.Time, hour int, minute int) time.Time {
 }
 
 func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Location) error {
-	targetGroupID := strings.TrimSpace(lineClient.defaultGroupID)
-	if !isLikelyLineTargetID(targetGroupID) {
-		return errors.New("missing or invalid LINE_STAFF_GROUP_ID for weekly notification")
+	groupIDs := lineClient.TargetGroupIDs()
+	if len(groupIDs) == 0 {
+		var err error
+		groupIDs, err = store.ListLineGroupIDs()
+		if err != nil {
+			return err
+		}
+	}
+	if len(groupIDs) == 0 {
+		return errors.New("ยังไม่มี LINE group ที่ลงทะเบียนสำหรับ weekly notification")
 	}
 
 	message := formatWeeklyLessons(store.ListLessons(), time.Now().In(loc))
-	for _, part := range splitLongLineMessage(message, 4500) {
-		if err := lineClient.SendText(targetGroupID, part); err != nil {
-			return err
+	for _, groupID := range groupIDs {
+		for _, part := range splitLongLineMessage(message, 4500) {
+			if err := lineClient.SendText(groupID, part); err != nil {
+				return fmt.Errorf("send to group %s: %w", groupID, err)
+			}
 		}
 	}
 	return nil
@@ -743,23 +1359,22 @@ func splitLongLineMessage(text string, maxLength int) []string {
 	return messages
 }
 
-func weekRange(now time.Time) (time.Time, time.Time) {
+func sevenDayRange(now time.Time) (time.Time, time.Time) {
 	now = now.In(now.Location())
-	weekdayOffset := (int(now.Weekday()) + 6) % 7
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -weekdayOffset)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	return start, start.AddDate(0, 0, 7)
 }
 
 func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
-	weekStart, weekEnd := weekRange(now)
+	weekStart, weekEnd := sevenDayRange(now)
 	weeklyLessons := filterLessonsInRange(lessons, weekStart, weekEnd)
 
 	var b strings.Builder
-	b.WriteString("📚 ตารางเรียนสัปดาห์นี้\n")
+	b.WriteString("📚 ตารางเรียน 7 วันข้างหน้า\n")
 	b.WriteString(formatThaiDateRange(weekStart, weekEnd.AddDate(0, 0, -1)))
 
 	if len(weeklyLessons) == 0 {
-		b.WriteString("\n\nยังไม่มีตารางเรียนในสัปดาห์นี้")
+		b.WriteString("\n\nยังไม่มีตารางเรียนใน 7 วันข้างหน้า")
 		return b.String()
 	}
 
@@ -800,8 +1415,26 @@ func formatUpdateNotification(lesson StudentLesson) string {
 	return "🔄 อัพเดทเวลาเรียน\n" + formatCompactLessonLine(lesson)
 }
 
+func formatAddStudentNotification(lesson StudentLesson) string {
+	if lesson.NextStart.IsZero() {
+		return fmt.Sprintf(
+			"➕ เพิ่มนักเรียนแล้ว\n%s %s (%s) | %s\nรวม %d ชม. | ยังไม่มีตารางเรียน",
+			confirmEmoji(lesson),
+			lesson.Nickname,
+			lesson.FullName,
+			lesson.Course,
+			lesson.TotalHours,
+		)
+	}
+	return "➕ เพิ่มนักเรียนแล้ว\n" + formatCompactLessonLine(lesson)
+}
+
 func formatConfirmNotification(lesson StudentLesson) string {
 	return "✅ คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
+}
+
+func formatUnconfirmNotification(lesson StudentLesson) string {
+	return "⏳ ไม่คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
 }
 
 func confirmEmoji(lesson StudentLesson) string {
@@ -1006,9 +1639,6 @@ func parseSlashDateSchedule(text string, loc *time.Location) (time.Time, time.Ti
 	if !ok {
 		return time.Time{}, time.Time{}, false
 	}
-	if strings.TrimSpace(matches[3]) == "" && start.Before(time.Now().In(loc).Add(-24*time.Hour)) {
-		return buildSchedule(year+1, month, day, startHour, startMinute, endHour, endMinute, loc)
-	}
 	return start, end, true
 }
 
@@ -1037,9 +1667,6 @@ func parseThaiDateSchedule(text string, loc *time.Location) (time.Time, time.Tim
 	start, end, ok := buildSchedule(year, month, day, startHour, startMinute, endHour, endMinute, loc)
 	if !ok {
 		return time.Time{}, time.Time{}, false
-	}
-	if strings.TrimSpace(matches[3]) == "" && start.Before(time.Now().In(loc).Add(-24*time.Hour)) {
-		return buildSchedule(year+1, month, day, startHour, startMinute, endHour, endMinute, loc)
 	}
 	return start, end, true
 }
@@ -1105,14 +1732,51 @@ func mustAtoi(value string) int {
 	return number
 }
 
+func newLessonStore(loc *time.Location, lineClient *LineClient) LessonStore {
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if databaseURL == "" {
+		log.Println("DATABASE_URL is empty; using in-memory mock lesson store")
+		store := NewMockLessonStore(loc)
+		registerConfiguredLineGroups(store, lineClient)
+		return store
+	}
+
+	store, err := NewPostgresLessonStore(databaseURL, loc)
+	if err != nil {
+		log.Fatal("connect database error:", err)
+	}
+
+	if !strings.EqualFold(os.Getenv("AUTO_MIGRATE"), "false") {
+		schemaPath := strings.TrimSpace(os.Getenv("DB_SCHEMA_PATH"))
+		if schemaPath == "" {
+			schemaPath = "db/schema.sql"
+		}
+		if err := store.Migrate(schemaPath); err != nil {
+			log.Fatal("database migration error:", err)
+		}
+	}
+
+	registerConfiguredLineGroups(store, lineClient)
+	log.Println("Using PostgreSQL lesson store")
+	return store
+}
+
+func registerConfiguredLineGroups(store LessonStore, lineClient *LineClient) {
+	for _, groupID := range lineClient.TargetGroupIDs() {
+		if err := store.RegisterLineGroup(groupID); err != nil {
+			log.Println("register configured LINE group error:", err)
+		}
+	}
+}
+
 func main() {
 	loc, err := time.LoadLocation("Asia/Bangkok")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	store := NewMockLessonStore(loc)
 	lineClient := NewLineClient()
+	store := newLessonStore(loc, lineClient)
 
 	startDailyNotifier(store, lineClient, loc)
 

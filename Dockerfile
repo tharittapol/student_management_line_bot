@@ -17,6 +17,7 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=build /out/student-management-line-bot /app/student-management-line-bot
+COPY db/schema.sql /app/db/schema.sql
 
 ENV TZ=Asia/Bangkok
 ENV PORT=8080

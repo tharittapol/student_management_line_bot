@@ -20,7 +20,7 @@ func TestProcessUpdateCommand(t *testing.T) {
 	store := NewMockLessonStore(loc)
 
 	response, handled, err := processStaffCommand(
-		"/อัพเดท แพรว 9/5/2569 13:00-15:00",
+		"/อัพเดท แพรว แพรวา 9/5/2569 13:00-15:00",
 		store,
 		loc,
 	)
@@ -56,7 +56,7 @@ func TestProcessConfirmCommand(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
 
-	response, handled, err := processStaffCommand("/คอนเฟิร์ม แพรว", store, loc)
+	response, handled, err := processStaffCommand("/คอนเฟิร์ม แพรว แพรวา", store, loc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,23 +73,114 @@ func TestProcessConfirmCommand(t *testing.T) {
 	}
 }
 
+func TestProcessUnconfirmCommand(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	_, _, err := processStaffCommand("/คอนเฟิร์ม แพรว แพรวา", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, handled, err := processStaffCommand("/ไม่คอนเฟิร์ม แพรว แพรวา", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected unconfirm command to be handled")
+	}
+	if !strings.Contains(response, "⏳ ไม่คอนเฟิร์มเวลาเรียน") {
+		t.Fatalf("expected unconfirm response, got %q", response)
+	}
+
+	lesson := findLesson(t, store.ListLessons(), "แพรว", "English Foundation")
+	if lesson.Confirmed {
+		t.Fatal("unconfirm command should mark lesson as not confirmed")
+	}
+}
+
+func TestProcessAddStudentCommand(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/เพิ่มนักเรียน พลอย พลอยลดา/Little 3D รุ่นที่ 1/8", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected add student command to be handled")
+	}
+	if !strings.Contains(response, "➕ เพิ่มนักเรียนแล้ว") {
+		t.Fatalf("expected add student response, got %q", response)
+	}
+
+	lesson := findLesson(t, store.ListLessons(), "พลอย", "Little 3D รุ่นที่ 1")
+	if lesson.FirstName != "พลอยลดา" {
+		t.Fatalf("expected first name พลอยลดา, got %q", lesson.FirstName)
+	}
+	if lesson.TotalHours != 8 {
+		t.Fatalf("expected 8 total hours, got %d", lesson.TotalHours)
+	}
+}
+
+func TestScheduleYearParsing(t *testing.T) {
+	loc := testLocation(t)
+
+	start, _, ok := parseSchedule("9/5 13:00-15:00", loc)
+	if !ok {
+		t.Fatal("expected short schedule to parse")
+	}
+	if start.Year() != time.Now().In(loc).Year() {
+		t.Fatalf("expected current year for short date, got %d", start.Year())
+	}
+
+	start, _, ok = parseSchedule("9/5/2570 13:00-15:00", loc)
+	if !ok {
+		t.Fatal("expected explicit year schedule to parse")
+	}
+	if start.Year() != 2027 {
+		t.Fatalf("expected Buddhist year 2570 to become 2027, got %d", start.Year())
+	}
+}
+
+func TestParseLineGroupIDs(t *testing.T) {
+	groupIDs := parseLineGroupIDs(
+		"C111,C222",
+		"C222 C333",
+		"your_line_group_id",
+		"UuserShouldNotBeRoutineTarget",
+	)
+
+	want := []string{"C111", "C222", "C333"}
+	if len(groupIDs) != len(want) {
+		t.Fatalf("expected %d group IDs, got %d: %#v", len(want), len(groupIDs), groupIDs)
+	}
+	for i := range want {
+		if groupIDs[i] != want[i] {
+			t.Fatalf("expected groupIDs[%d]=%s, got %s", i, want[i], groupIDs[i])
+		}
+	}
+}
+
 func TestFormatWeeklyLessons(t *testing.T) {
 	loc := testLocation(t)
-	now := time.Date(2026, time.May, 4, 9, 0, 0, 0, loc)
+	now := time.Date(2026, time.May, 6, 9, 0, 0, 0, loc)
 	lessons := []StudentLesson{
 		{
 			Nickname:       "แพรว",
+			FirstName:      "แพรวา",
 			FullName:       "แพรวา ศิริพงษ์",
 			Course:         "English Foundation",
 			TotalHours:     20,
 			CompletedHours: 6,
 			SessionHours:   2,
-			NextStart:      time.Date(2026, time.May, 4, 18, 0, 0, 0, loc),
-			NextEnd:        time.Date(2026, time.May, 4, 20, 0, 0, 0, loc),
+			NextStart:      time.Date(2026, time.May, 6, 18, 0, 0, 0, loc),
+			NextEnd:        time.Date(2026, time.May, 6, 20, 0, 0, 0, loc),
 			Confirmed:      false,
 		},
 		{
 			Nickname:       "บอส",
+			FirstName:      "ธนากร",
 			FullName:       "ธนากร ใจดี",
 			Course:         "คณิตศาสตร์ ม.2",
 			TotalHours:     24,
@@ -100,26 +191,26 @@ func TestFormatWeeklyLessons(t *testing.T) {
 			Confirmed:      true,
 		},
 		{
-			Nickname:  "นอกสัปดาห์",
+			Nickname:  "นอกช่วง",
 			FullName:  "อย่าแสดง",
 			Course:    "Mock",
-			NextStart: time.Date(2026, time.May, 11, 9, 0, 0, 0, loc),
-			NextEnd:   time.Date(2026, time.May, 11, 10, 0, 0, 0, loc),
+			NextStart: time.Date(2026, time.May, 13, 9, 0, 0, 0, loc),
+			NextEnd:   time.Date(2026, time.May, 13, 10, 0, 0, 0, loc),
 		},
 	}
 
 	message := formatWeeklyLessons(lessons, now)
-	if !strings.Contains(message, "📚 ตารางเรียนสัปดาห์นี้") {
-		t.Fatalf("expected weekly header, got %q", message)
+	if !strings.Contains(message, "📚 ตารางเรียน 7 วันข้างหน้า") {
+		t.Fatalf("expected rolling 7-day header, got %q", message)
 	}
-	if !strings.Contains(message, "4-10 พ.ค. 2569") {
-		t.Fatalf("expected week range, got %q", message)
+	if !strings.Contains(message, "6-12 พ.ค. 2569") {
+		t.Fatalf("expected 7-day range from today, got %q", message)
 	}
 	if !strings.Contains(message, "⏳ แพรว") || !strings.Contains(message, "✅ บอส") {
 		t.Fatalf("expected confirmation emojis per student, got %q", message)
 	}
-	if strings.Contains(message, "นอกสัปดาห์") {
-		t.Fatalf("expected lessons outside the week to be hidden, got %q", message)
+	if strings.Contains(message, "นอกช่วง") {
+		t.Fatalf("expected lessons outside the 7-day range to be hidden, got %q", message)
 	}
 }
 
@@ -138,8 +229,8 @@ func TestProcessScheduleRequestCommand(t *testing.T) {
 	if !handled {
 		t.Fatal("expected schedule request command to be handled")
 	}
-	if !strings.Contains(response, "📚 ตารางเรียนสัปดาห์นี้") {
-		t.Fatalf("expected weekly lesson schedule response, got %q", response)
+	if !strings.Contains(response, "📚 ตารางเรียน 7 วันข้างหน้า") {
+		t.Fatalf("expected rolling 7-day lesson schedule response, got %q", response)
 	}
 }
 
