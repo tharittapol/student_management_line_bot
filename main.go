@@ -182,8 +182,23 @@ type StudentLesson struct {
 	UpdatedAt      time.Time
 }
 
+type StudentScheduleSummary struct {
+	Nickname        string
+	FirstName       string
+	FullName        string
+	Course          string
+	TotalHours      int
+	CompletedHours  int
+	DefaultSchedule string
+	PastLessons     string
+	NextLessons     string
+	ScheduleNotes   string
+}
+
 type LessonStore interface {
 	ListLessons() []StudentLesson
+	ListStudentSchedules() []StudentScheduleSummary
+	FindStudentSchedules(nickname, firstName string) ([]StudentScheduleSummary, error)
 	AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error)
 	UpdateLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
 	ConfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
@@ -350,6 +365,35 @@ func (s *MockLessonStore) ListLessons() []StudentLesson {
 		return lessons[i].NextStart.Before(lessons[j].NextStart)
 	})
 	return lessons
+}
+
+func (s *MockLessonStore) ListStudentSchedules() []StudentScheduleSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	summaries := make([]StudentScheduleSummary, 0, len(s.lessons))
+	for _, lesson := range s.lessons {
+		summaries = append(summaries, lessonToScheduleSummary(lesson))
+	}
+	sortStudentScheduleSummaries(summaries)
+	return summaries
+}
+
+func (s *MockLessonStore) FindStudentSchedules(nickname, firstName string) ([]StudentScheduleSummary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var summaries []StudentScheduleSummary
+	for _, lesson := range s.lessons {
+		if strings.EqualFold(lesson.Nickname, strings.TrimSpace(nickname)) && strings.EqualFold(lesson.FirstName, strings.TrimSpace(firstName)) {
+			summaries = append(summaries, lessonToScheduleSummary(lesson))
+		}
+	}
+	if len(summaries) == 0 {
+		return nil, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
+	}
+	sortStudentScheduleSummaries(summaries)
+	return summaries, nil
 }
 
 func (s *MockLessonStore) AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error) {
@@ -577,6 +621,155 @@ func (s *PostgresLessonStore) ListLessons() []StudentLesson {
 	return lessons
 }
 
+func (s *PostgresLessonStore) ListStudentSchedules() []StudentScheduleSummary {
+	rows, err := s.db.Query(studentScheduleSummaryQuery(""))
+	if err != nil {
+		log.Println("list student schedules query error:", err)
+		return nil
+	}
+	defer rows.Close()
+
+	summaries, err := scanStudentScheduleSummaries(rows)
+	if err != nil {
+		log.Println("scan student schedules error:", err)
+		return nil
+	}
+	return summaries
+}
+
+func (s *PostgresLessonStore) FindStudentSchedules(nickname, firstName string) ([]StudentScheduleSummary, error) {
+	rows, err := s.db.Query(
+		studentScheduleSummaryQuery(`
+		  AND lower(st.nickname) = lower($1)
+		  AND lower(st.first_name) = lower($2)
+		`),
+		strings.TrimSpace(nickname),
+		strings.TrimSpace(firstName),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	summaries, err := scanStudentScheduleSummaries(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(summaries) == 0 {
+		return nil, fmt.Errorf("ไม่พบนักเรียน: %s / %s", nickname, firstName)
+	}
+	return summaries, nil
+}
+
+func studentScheduleSummaryQuery(extraWhere string) string {
+	return `
+		SELECT
+			st.nickname,
+			st.first_name,
+			COALESCE(st.full_name_th, ''),
+			c.name,
+			e.total_hours,
+			e.completed_hours,
+			COALESCE((
+				SELECT string_agg(
+					eds.weekday_text || ' ' || to_char(eds.start_time, 'HH24:MI') || '-' || to_char(eds.end_time, 'HH24:MI'),
+					', ' ORDER BY eds.weekday_text, eds.start_time
+				)
+				FROM enrollment_default_schedules eds
+				WHERE eds.enrollment_id = e.id
+				  AND eds.active = true
+			), (
+				SELECT concat_ws(' | ', NULLIF(default_day_text, ''), string_agg(slot_text, ', ' ORDER BY sort_time))
+				FROM (
+					SELECT DISTINCT
+						COALESCE(cds.default_day_text, '') AS default_day_text,
+						to_char(cds.start_time, 'HH24:MI') || '-' || to_char(cds.end_time, 'HH24:MI') AS slot_text,
+						cds.start_time AS sort_time
+					FROM course_default_schedules cds
+					WHERE cds.course_id = c.id
+					  AND cds.active = true
+				) default_slots
+				GROUP BY default_day_text
+				LIMIT 1
+			), '') AS default_schedule,
+			COALESCE((
+				SELECT string_agg(item, ', ' ORDER BY start_at DESC)
+				FROM (
+					SELECT
+						ls.start_at,
+						to_char(ls.start_at AT TIME ZONE 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI') || '-' ||
+						to_char(ls.end_at AT TIME ZONE 'Asia/Bangkok', 'HH24:MI') AS item
+					FROM lesson_sessions ls
+					WHERE ls.enrollment_id = e.id
+					  AND ls.status = 'completed'
+					ORDER BY ls.start_at DESC
+					LIMIT 3
+				) past_sessions
+			), '') AS past_lessons,
+			COALESCE((
+				SELECT string_agg(item, ', ' ORDER BY start_at)
+				FROM (
+					SELECT
+						ls.start_at,
+						to_char(ls.start_at AT TIME ZONE 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI') || '-' ||
+						to_char(ls.end_at AT TIME ZONE 'Asia/Bangkok', 'HH24:MI') AS item
+					FROM lesson_sessions ls
+					WHERE ls.enrollment_id = e.id
+					  AND ls.status NOT IN ('completed', 'cancelled')
+					  AND ls.start_at >= NOW()
+					ORDER BY ls.start_at
+					LIMIT 3
+				) next_sessions
+			), '') AS next_lessons,
+			COALESCE((
+				SELECT string_agg(source_text, ', ' ORDER BY sort_status, sequence_no)
+				FROM (
+					SELECT
+						esn.sequence_no,
+						esn.source_text,
+						CASE esn.status
+							WHEN 'pending_confirm' THEN 0
+							WHEN 'pending_date' THEN 1
+							ELSE 2
+						END AS sort_status
+					FROM enrollment_schedule_notes esn
+					WHERE esn.enrollment_id = e.id
+					ORDER BY sort_status, esn.sequence_no
+					LIMIT 3
+				) notes
+			), '') AS schedule_notes
+		FROM enrollments e
+		JOIN students st ON st.id = e.student_id
+		JOIN courses c ON c.id = e.course_id
+		WHERE e.active = true
+	` + extraWhere + `
+		ORDER BY c.name, st.nickname, st.first_name
+	`
+}
+
+func scanStudentScheduleSummaries(rows *sql.Rows) ([]StudentScheduleSummary, error) {
+	var summaries []StudentScheduleSummary
+	for rows.Next() {
+		var summary StudentScheduleSummary
+		if err := rows.Scan(
+			&summary.Nickname,
+			&summary.FirstName,
+			&summary.FullName,
+			&summary.Course,
+			&summary.TotalHours,
+			&summary.CompletedHours,
+			&summary.DefaultSchedule,
+			&summary.PastLessons,
+			&summary.NextLessons,
+			&summary.ScheduleNotes,
+		); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, rows.Err()
+}
+
 func (s *PostgresLessonStore) AddStudent(nickname, firstName, course string, totalHours int, scheduleText string) (StudentLesson, error) {
 	nickname = strings.TrimSpace(nickname)
 	firstName = strings.TrimSpace(firstName)
@@ -599,9 +792,6 @@ func (s *PostgresLessonStore) AddStudent(nickname, firstName, course string, tot
 	if err := tx.QueryRow(`
 		INSERT INTO students (nickname, first_name, full_name_th)
 		VALUES ($1, $2, $2)
-		ON CONFLICT (nickname, first_name) DO UPDATE SET
-			full_name_th = COALESCE(students.full_name_th, EXCLUDED.full_name_th),
-			updated_at = NOW()
 		RETURNING id
 	`, nickname, firstName).Scan(&studentID); err != nil {
 		return StudentLesson{}, err
@@ -1023,6 +1213,9 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 	if isScheduleRequestCommand(normalized) {
 		return formatWeeklyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
 	}
+	if isStudentScheduleRequestCommand(normalized) {
+		return processStudentScheduleRequest(normalized, store)
+	}
 	if strings.HasPrefix(normalized, "/") {
 		if response, handled, err := processCompactSlashCommand(normalized, store); handled {
 			return response, handled, err
@@ -1251,6 +1444,31 @@ func isScheduleRequestCommand(text string) bool {
 	return text == "/ตารางเรียน"
 }
 
+func isStudentScheduleRequestCommand(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(text, "/ข้อมูลนักเรียน") || strings.HasPrefix(text, "/นักเรียน")
+}
+
+func processStudentScheduleRequest(text string, store LessonStore) (string, bool, error) {
+	body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "/ข้อมูลนักเรียน"))
+	if body == strings.TrimSpace(text) {
+		body = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "/นักเรียน"))
+	}
+	if body == "" {
+		return formatStudentScheduleSummaries(store.ListStudentSchedules()), true, nil
+	}
+
+	fields := strings.Fields(body)
+	if len(fields) < 2 {
+		return "", true, errors.New("คำสั่งข้อมูลนักเรียนต้องเป็น: /ข้อมูลนักเรียน ชื่อเล่น ชื่อจริง")
+	}
+	summaries, err := store.FindStudentSchedules(fields[0], fields[1])
+	if err != nil {
+		return "", true, err
+	}
+	return formatStudentScheduleSummaries(summaries), true, nil
+}
+
 func isConfirmWord(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = strings.ReplaceAll(text, " ", "")
@@ -1262,6 +1480,8 @@ func commandHelpText() string {
 	return strings.Join([]string{
 		"ตัวอย่างคำสั่ง",
 		"/ตารางเรียน",
+		"/ข้อมูลนักเรียน",
+		"/ข้อมูลนักเรียน แพรว แพรวา",
 		"/เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8",
 		"/อัพเดท แพรว แพรวา 9/5 13:00-15:00",
 		"/คอนเฟิร์ม แพรว แพรวา",
@@ -1374,7 +1594,7 @@ func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
 	b.WriteString(formatThaiDateRange(weekStart, weekEnd.AddDate(0, 0, -1)))
 
 	if len(weeklyLessons) == 0 {
-		b.WriteString("\n\nยังไม่มีตารางเรียนใน 7 วันข้างหน้า")
+		b.WriteString("\n\nยังไม่มีตารางเรียนที่มีวันที่ชัดเจนใน 7 วันข้างหน้า")
 		return b.String()
 	}
 
@@ -1409,6 +1629,91 @@ func formatCompactLessonLine(lesson StudentLesson) string {
 		shortHourLabel(lesson),
 		remainingHours(lesson),
 	)
+}
+
+func lessonToScheduleSummary(lesson StudentLesson) StudentScheduleSummary {
+	nextLessons := ""
+	if !lesson.NextStart.IsZero() {
+		nextLessons = formatShortLessonTime(lesson.NextStart, lesson.NextEnd)
+	}
+	defaultSchedule := strings.TrimSpace(lesson.ScheduleText)
+	if defaultSchedule == "" {
+		defaultSchedule = nextLessons
+	}
+	return StudentScheduleSummary{
+		Nickname:        lesson.Nickname,
+		FirstName:       lesson.FirstName,
+		FullName:        lesson.FullName,
+		Course:          lesson.Course,
+		TotalHours:      lesson.TotalHours,
+		CompletedHours:  lesson.CompletedHours,
+		DefaultSchedule: defaultSchedule,
+		NextLessons:     nextLessons,
+	}
+}
+
+func sortStudentScheduleSummaries(summaries []StudentScheduleSummary) {
+	sort.Slice(summaries, func(i, j int) bool {
+		if summaries[i].Course != summaries[j].Course {
+			return summaries[i].Course < summaries[j].Course
+		}
+		if summaries[i].Nickname != summaries[j].Nickname {
+			return summaries[i].Nickname < summaries[j].Nickname
+		}
+		return summaries[i].FirstName < summaries[j].FirstName
+	})
+}
+
+func formatStudentScheduleSummaries(summaries []StudentScheduleSummary) string {
+	if len(summaries) == 0 {
+		return "ยังไม่มีข้อมูลนักเรียน"
+	}
+
+	var b strings.Builder
+	b.WriteString("👥 ข้อมูลตารางรายนักเรียน")
+	for _, summary := range summaries {
+		b.WriteString("\n\n")
+		b.WriteString(formatStudentScheduleSummary(summary))
+	}
+	return b.String()
+}
+
+func formatStudentScheduleSummary(summary StudentScheduleSummary) string {
+	pastLessons := fallbackText(summary.PastLessons, "ยังไม่มีข้อมูล")
+	nextLessons := fallbackText(summary.NextLessons, "ยังไม่มีวันที่ชัดเจน")
+	defaultSchedule := fallbackText(summary.DefaultSchedule, "ยังไม่มี default")
+
+	line := fmt.Sprintf(
+		"👤 %s %s | %s\nเรียนแล้ว: %s\nถัดไป: %s\nปกติ: %s\nเหลือ %d/%d ชม.",
+		summary.Nickname,
+		summary.FirstName,
+		summary.Course,
+		pastLessons,
+		nextLessons,
+		defaultSchedule,
+		summaryRemainingHours(summary),
+		summary.TotalHours,
+	)
+	if strings.TrimSpace(summary.ScheduleNotes) != "" {
+		line += "\nโน้ต: " + summary.ScheduleNotes
+	}
+	return line
+}
+
+func fallbackText(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func summaryRemainingHours(summary StudentScheduleSummary) int {
+	remaining := summary.TotalHours - summary.CompletedHours
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func formatUpdateNotification(lesson StudentLesson) string {
@@ -1733,6 +2038,17 @@ func mustAtoi(value string) int {
 }
 
 func newLessonStore(loc *time.Location, lineClient *LineClient) LessonStore {
+	googleSheetID := strings.TrimSpace(os.Getenv("GOOGLE_SHEET_ID"))
+	if googleSheetID != "" {
+		store, err := NewGoogleSheetsLessonStore(googleSheetID, loc)
+		if err != nil {
+			log.Fatal("connect Google Sheets error:", err)
+		}
+		registerConfiguredLineGroups(store, lineClient)
+		log.Println("Using Google Sheets lesson store")
+		return store
+	}
+
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL == "" {
 		log.Println("DATABASE_URL is empty; using in-memory mock lesson store")

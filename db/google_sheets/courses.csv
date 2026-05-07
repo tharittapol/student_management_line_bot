@@ -1,0 +1,8 @@
+id,name,description,default_total_hours,default_session_hours,created_at,updated_at
+course_001,Basic Create (Design 3D),Seeded from class schedule CSV export | Robogenesis,8,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_002,INTERMEDIATE CONTROL (Programming),Seeded from class schedule CSV export | Robogenesis,8,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_003,Level #1 – Junior Robotics Discovery (Lego Wedo),Seeded from class schedule CSV export | RoboJourney: From Discovery to Mission,20,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_004,Level #1 – Little 3D Inventors (Basic),Seeded from class schedule CSV export | Little 3D Inventors Series,8,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_005,Level #2 – Little 3D Inventors (Pro),Seeded from class schedule CSV export | Little 3D Inventors Series,8,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_006,Level #3 – Little 3D Inventors (Advanced),Seeded from class schedule CSV export | Little 3D Inventors Series,16,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+course_007,PRE-INTERMEDIATE POWER (CIRCUITS),Seeded from class schedule CSV export | Robogenesis,16,1,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00

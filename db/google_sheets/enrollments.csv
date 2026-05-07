@@ -1,0 +1,22 @@
+id,student_id,course_id,total_hours,completed_hours,default_session_hours,teacher,started_on,external_status,active,note,created_at,updated_at
+enrollment_001,student_001,course_005,8,8,1,Kung,2026-03-22,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_002,student_001,course_006,16,0,1,Kung,2026-04-07,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_003,student_002,course_004,8,0,1,Test,2026-04-26,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_004,student_003,course_003,20,16,1,Kung,2026-02-28,กำลังเรียน,true,RoboJourney: From Discovery to Mission,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_005,student_004,course_004,8,4,1,Test,2026-03-24,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_006,student_005,course_001,8,0,1,Test,2026-01-18,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_007,student_005,course_002,8,8,1,Test,2026-04-04,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_008,student_005,course_007,8,0,1,Test,2026-02-22,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_009,student_006,course_001,8,0,1,Kung,2026-01-18,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_010,student_006,course_002,8,0,1,Kung,2026-03-29,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_011,student_006,course_004,8,0,1,Kung,2026-01-24,เรียนจบแล้ว,false,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_012,student_006,course_007,8,0,1,Kung,2026-02-22,เรียนจบแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_013,student_007,course_001,8,0,1,Kung,2026-01-18,ออกแล้ว,false,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_014,student_007,course_003,20,14,1,Test,2026-02-08,กำลังเรียน,true,RoboJourney: From Discovery to Mission,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_015,student_008,course_003,20,2,1,Kung,2026-04-26,กำลังเรียน,true,RoboJourney: From Discovery to Mission,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_016,student_009,course_004,8,0,1,Kawin Yamtuan,2026-04-26,รอเริ่ม,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_017,student_010,course_004,8,0,1,NookNick,2026-03-28,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_018,student_011,course_004,8,0,1,Test,2026-04-10,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_019,student_012,course_005,8,0,1,Kung,2026-05-02,กำลังเรียน,true,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_020,student_013,course_004,8,0,1,Boss,2026-03-29,เรียนจบแล้ว,false,Little 3D Inventors Series,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_021,student_013,course_007,16,0,1,Test,2026-04-25,กำลังเรียน,true,Robogenesis,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00

@@ -234,6 +234,25 @@ func TestProcessScheduleRequestCommand(t *testing.T) {
 	}
 }
 
+func TestProcessStudentScheduleRequestCommand(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/ข้อมูลนักเรียน แพรว แพรวา", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected student schedule request command to be handled")
+	}
+	if !strings.Contains(response, "👥 ข้อมูลตารางรายนักเรียน") {
+		t.Fatalf("expected student schedule header, got %q", response)
+	}
+	if !strings.Contains(response, "เรียนแล้ว:") || !strings.Contains(response, "ถัดไป:") || !strings.Contains(response, "ปกติ:") {
+		t.Fatalf("expected student schedule details, got %q", response)
+	}
+}
+
 func findLesson(t *testing.T, lessons []StudentLesson, nickname string, course string) StudentLesson {
 	t.Helper()
 	for _, lesson := range lessons {

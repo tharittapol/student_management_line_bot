@@ -1,0 +1,14 @@
+id,source_key,nickname,first_name,full_name_th,full_name_en,gender,age,nationality,parent_phone,parent_name,line_name,email,note,created_at,updated_at
+student_001,class-schedule:01d6c3649be334c6,Daniel,Jaeyong,Jaeyong Shin,Jaeyong Shin,,,,0930462797,Juyoung Park,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_002,class-schedule:0e11e0e791f1d472,กิสโม่,อัศจรรย์,อัศจรรย์ ธรรมสังคีติ,,,,,0839098777,Patcha Bank,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_003,class-schedule:108e707e83f3d78a,ฌาณ,Chatchon,Chatchon Chayathab,Chatchon Chayathab,,,,0927426546,ธนธนิก บุญมี,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_004,class-schedule:235c3d4f2c83ee03,เกรท,กรพจน์,กรพจน์ สันติเจริญเลิศ,,,,,0946456951,ไอรินทร์ เสรีกัญญาลักษณ์,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_005,class-schedule:2f89b74f54b8c9a0,ไพร์ม,Phonlaphat,Phonlaphat Kritsadavorakul,Phonlaphat Kritsadavorakul,,,,0994651749,สราวุธ กฤษฎาวรกุล,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_006,class-schedule:34defae8b4b54a32,ชาลี,Yik,Yik Hei Sung,Yik Hei Sung,,,,0637203986,Ms.ELSA,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_007,class-schedule:49b0b1435f12cb50,อเล็กซ์,Sucheep,Sucheep Tangpanwong,Sucheep Tangpanwong,,,,0865164060,สมฤดี ตั้งพรรณ,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_008,class-schedule:5f7183a79fb0f918,ไททัน,ภูมิณภัทร์,ดช ภูมิณภัทร์ โอศิริ,,,,,0896146541,ไลล่า โกดารี,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_009,class-schedule:720f12c43df8ba28,TJ,Bira,Bira Ningsanond,Bira Ningsanond,,,,0894960090,T Nathee Ningsanond,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_010,class-schedule:a1a6659ef36406f5,เกรซ,เกศรินทร์,เกศรินทร์ มหาศิริ,,,,,0819209338,Patamaporn Sermsaksasitorn,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_011,class-schedule:aecf236fa29f672f,นีน่า,นีน่า,นีน่า,,,,,0826550006,ศุภรา สุขสันติสวัสดิ์,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_012,class-schedule:b47276be4ba4b650,ปราชญ์,Prach,Prach Raungjutiphophan,Prach Raungjutiphophan,,,,0841591381,วันเพ็ญ,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+student_013,class-schedule:d636489fd37c9e28,wind wind,wind,wind wind,wind wind,,,,0894571747,suchada chertkiatwong,,,,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00

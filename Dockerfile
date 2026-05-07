@@ -18,6 +18,7 @@ WORKDIR /app
 
 COPY --from=build /out/student-management-line-bot /app/student-management-line-bot
 COPY db/schema.sql /app/db/schema.sql
+COPY db/google_sheets /app/db/google_sheets
 
 ENV TZ=Asia/Bangkok
 ENV PORT=8080

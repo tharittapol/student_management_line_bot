@@ -1,0 +1,22 @@
+id,enrollment_id,weekday_text,start_time,end_time,active,note,created_at,updated_at
+enrollment_default_schedule_001,enrollment_001,อาทิตย์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_002,enrollment_002,อาทิตย์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_003,enrollment_003,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_004,enrollment_004,เสาร์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_005,enrollment_005,อังคาร,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_006,enrollment_006,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_007,enrollment_007,เสาร์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_008,enrollment_008,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_009,enrollment_009,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_010,enrollment_010,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_011,enrollment_011,เสาร์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_012,enrollment_012,อาทิตย์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_013,enrollment_013,อาทิตย์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_014,enrollment_014,อาทิตย์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_015,enrollment_015,อาทิตย์,16:00:00,17:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_016,enrollment_016,อาทิตย์,09:00:00,10:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_017,enrollment_017,เสาร์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_018,enrollment_018,ศุกร์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_019,enrollment_019,เสาร์,15:00:00,16:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_020,enrollment_020,อาทิตย์,10:00:00,11:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
+enrollment_default_schedule_021,enrollment_021,เสาร์,13:00:00,14:00:00,true,Seeded from Class schedule - Overview.csv,2026-05-07T00:00:00+07:00,2026-05-07T00:00:00+07:00
