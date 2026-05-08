@@ -96,14 +96,10 @@ func (s *ClassScheduleSheetsLessonStore) ListLessons() []StudentLesson {
 		log.Println("list class schedule lessons error:", err)
 		return nil
 	}
-	now := time.Now().In(s.loc)
-	from := now.AddDate(0, 0, -30)
-	to := now.AddDate(0, 0, 365)
-
 	var lessons []StudentLesson
 	for _, record := range weekly {
 		start, end, ok := weeklyRecordTime(record, s.loc)
-		if !ok || start.Before(from) || !start.Before(to) {
+		if !ok {
 			continue
 		}
 		lessons = append(lessons, record.toStudentLesson(start, end, s.loc))

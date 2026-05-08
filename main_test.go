@@ -189,17 +189,17 @@ func TestFormatWeeklyLessons(t *testing.T) {
 	}
 
 	message := formatWeeklyLessons(lessons, now)
-	if !strings.Contains(message, "📚 ตารางเรียน 7 วันข้างหน้า") {
-		t.Fatalf("expected rolling 7-day header, got %q", message)
+	if !strings.Contains(message, "📚 ตารางเรียนในแท็บสัปดาห์นี้") {
+		t.Fatalf("expected sheet weekly header, got %q", message)
 	}
-	if !strings.Contains(message, "6-12 พ.ค. 2569") {
-		t.Fatalf("expected 7-day range from today, got %q", message)
+	if !strings.Contains(message, "6-13 พ.ค. 2569") {
+		t.Fatalf("expected range from lessons in sheet, got %q", message)
 	}
 	if !strings.Contains(message, "⏳ แพรว") || !strings.Contains(message, "✅ บอส") {
 		t.Fatalf("expected confirmation emojis per student, got %q", message)
 	}
-	if strings.Contains(message, "นอกช่วง") {
-		t.Fatalf("expected lessons outside the 7-day range to be hidden, got %q", message)
+	if !strings.Contains(message, "นอกช่วง") {
+		t.Fatalf("expected all lessons from weekly tab to be shown, got %q", message)
 	}
 }
 
@@ -218,8 +218,8 @@ func TestProcessScheduleRequestCommand(t *testing.T) {
 	if !handled {
 		t.Fatal("expected schedule request command to be handled")
 	}
-	if !strings.Contains(response, "📚 ตารางเรียน 7 วันข้างหน้า") {
-		t.Fatalf("expected rolling 7-day lesson schedule response, got %q", response)
+	if !strings.Contains(response, "📚 ตารางเรียนในแท็บสัปดาห์นี้") {
+		t.Fatalf("expected weekly tab lesson schedule response, got %q", response)
 	}
 }
 

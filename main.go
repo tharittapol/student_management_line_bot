@@ -1594,22 +1594,23 @@ func splitLongLine(line string, maxLength int) []string {
 	return segments
 }
 
-func sevenDayRange(now time.Time) (time.Time, time.Time) {
-	now = now.In(now.Location())
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	return start, start.AddDate(0, 0, 7)
-}
-
 func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
-	weekStart, weekEnd := sevenDayRange(now)
-	weeklyLessons := filterLessonsInRange(lessons, weekStart, weekEnd)
+	_ = now
+	weeklyLessons := make([]StudentLesson, len(lessons))
+	copy(weeklyLessons, lessons)
+	sort.Slice(weeklyLessons, func(i, j int) bool {
+		return weeklyLessons[i].NextStart.Before(weeklyLessons[j].NextStart)
+	})
 
 	var b strings.Builder
-	b.WriteString("📚 ตารางเรียน 7 วันข้างหน้า\n")
-	b.WriteString(formatThaiDateRange(weekStart, weekEnd.AddDate(0, 0, -1)))
+	b.WriteString("📚 ตารางเรียนในแท็บสัปดาห์นี้")
+	if dateRange := lessonDateRangeText(weeklyLessons); dateRange != "" {
+		b.WriteString("\n")
+		b.WriteString(dateRange)
+	}
 
 	if len(weeklyLessons) == 0 {
-		b.WriteString("\n\nยังไม่มีตารางเรียนที่มีวันที่ชัดเจนใน 7 วันข้างหน้า")
+		b.WriteString("\n\nยังไม่มีตารางเรียนที่มีวันที่ชัดเจนในแท็บสัปดาห์นี้")
 		return b.String()
 	}
 
@@ -1620,17 +1621,19 @@ func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
 	return b.String()
 }
 
-func filterLessonsInRange(lessons []StudentLesson, start time.Time, end time.Time) []StudentLesson {
-	filtered := make([]StudentLesson, 0, len(lessons))
+func lessonDateRangeText(lessons []StudentLesson) string {
+	var dated []StudentLesson
 	for _, lesson := range lessons {
-		if !lesson.NextStart.Before(start) && lesson.NextStart.Before(end) {
-			filtered = append(filtered, lesson)
+		if !lesson.NextStart.IsZero() {
+			dated = append(dated, lesson)
 		}
 	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return filtered[i].NextStart.Before(filtered[j].NextStart)
-	})
-	return filtered
+	if len(dated) == 0 {
+		return ""
+	}
+	start := time.Date(dated[0].NextStart.Year(), dated[0].NextStart.Month(), dated[0].NextStart.Day(), 0, 0, 0, 0, dated[0].NextStart.Location())
+	end := time.Date(dated[len(dated)-1].NextStart.Year(), dated[len(dated)-1].NextStart.Month(), dated[len(dated)-1].NextStart.Day(), 0, 0, 0, 0, dated[len(dated)-1].NextStart.Location())
+	return formatThaiDateRange(start, end)
 }
 
 func formatCompactLessonLine(lesson StudentLesson) string {
