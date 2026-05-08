@@ -33,6 +33,9 @@ func TestProcessUpdateCommand(t *testing.T) {
 	if !strings.Contains(response, "🔄 อัพเดทเวลาเรียน") {
 		t.Fatalf("expected update response, got %q", response)
 	}
+	if !strings.Contains(response, "2569") {
+		t.Fatalf("expected Buddhist year in explicit-year update response, got %q", response)
+	}
 	if !strings.Contains(response, "⏳ แพรว") {
 		t.Fatalf("expected waiting confirmation emoji in response, got %q", response)
 	}
@@ -159,6 +162,24 @@ func TestScheduleYearParsing(t *testing.T) {
 	}
 }
 
+func TestScheduleTextHasExplicitYear(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"9/5 13:00-15:00", false},
+		{"9/5/2570 13:00-15:00", true},
+		{"2027-05-09 13:00-15:00", true},
+		{"9 พ.ค. 13:00-15:00", false},
+		{"9 พ.ค. 2570 13:00-15:00", true},
+	}
+	for _, tt := range cases {
+		if got := scheduleTextHasExplicitYear(tt.text); got != tt.want {
+			t.Fatalf("scheduleTextHasExplicitYear(%q)=%v, want %v", tt.text, got, tt.want)
+		}
+	}
+}
+
 func TestParseLineGroupIDs(t *testing.T) {
 	groupIDs := parseLineGroupIDs(
 		"C111,C222",
@@ -193,6 +214,7 @@ func TestFormatWeeklyLessons(t *testing.T) {
 			NextStart:      time.Date(2026, time.May, 6, 18, 0, 0, 0, loc),
 			NextEnd:        time.Date(2026, time.May, 6, 20, 0, 0, 0, loc),
 			Confirmed:      false,
+			LearningStatus: "เข้าเรียนปกติ",
 		},
 		{
 			Nickname:       "บอส",
@@ -205,6 +227,7 @@ func TestFormatWeeklyLessons(t *testing.T) {
 			NextStart:      time.Date(2026, time.May, 9, 13, 0, 0, 0, loc),
 			NextEnd:        time.Date(2026, time.May, 9, 15, 0, 0, 0, loc),
 			Confirmed:      true,
+			LearningStatus: "ลา",
 		},
 		{
 			Nickname:  "นอกช่วง",
@@ -225,8 +248,27 @@ func TestFormatWeeklyLessons(t *testing.T) {
 	if !strings.Contains(message, "⏳ แพรว") || !strings.Contains(message, "✅ บอส") {
 		t.Fatalf("expected confirmation emojis per student, got %q", message)
 	}
+	if !strings.Contains(message, "เข้าเรียนปกติ") || !strings.Contains(message, "ลา") {
+		t.Fatalf("expected learning statuses in schedule, got %q", message)
+	}
 	if !strings.Contains(message, "นอกช่วง") {
 		t.Fatalf("expected all lessons from weekly tab to be shown, got %q", message)
+	}
+}
+
+func TestHelpCommandThaiUsage(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/วิธีใช้งาน", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected Thai usage command to be handled")
+	}
+	if !strings.Contains(response, "วิธีใช้งาน") || !strings.Contains(response, "/ตารางเรียน -") {
+		t.Fatalf("expected concise usage text, got %q", response)
 	}
 }
 

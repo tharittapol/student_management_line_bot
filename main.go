@@ -240,6 +240,7 @@ type StudentLesson struct {
 	NextEnd        time.Time
 	ScheduleText   string
 	Confirmed      bool
+	LearningStatus string
 	UpdatedAt      time.Time
 }
 
@@ -1321,19 +1322,19 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 		if err != nil {
 			return "", true, err
 		}
-		return formatUpdateNotification(lesson), true, nil
+		return formatUpdateNotification(lesson, command.ScheduleHasYear), true, nil
 	case "confirm":
 		lesson, err := store.ConfirmLesson(command.Nickname, command.FirstName, command.ScheduleText)
 		if err != nil {
 			return "", true, err
 		}
-		return formatConfirmNotification(lesson), true, nil
+		return formatConfirmNotification(lesson, command.ScheduleHasYear), true, nil
 	case "unconfirm":
 		lesson, err := store.UnconfirmLesson(command.Nickname, command.FirstName, command.ScheduleText)
 		if err != nil {
 			return "", true, err
 		}
-		return formatUnconfirmNotification(lesson), true, nil
+		return formatUnconfirmNotification(lesson, command.ScheduleHasYear), true, nil
 	case "leave":
 		lesson, err := store.UpdateLearningStatus(command.Nickname, command.FirstName, "ลา")
 		if err != nil {
@@ -1352,10 +1353,11 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 }
 
 type compactSlashCommand struct {
-	Action       string
-	Nickname     string
-	FirstName    string
-	ScheduleText string
+	Action          string
+	Nickname        string
+	FirstName       string
+	ScheduleText    string
+	ScheduleHasYear bool
 }
 
 func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
@@ -1398,10 +1400,11 @@ func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
 	}
 
 	return compactSlashCommand{
-		Action:       action,
-		Nickname:     strings.TrimSpace(nickname),
-		FirstName:    strings.TrimSpace(firstName),
-		ScheduleText: strings.TrimSpace(scheduleText),
+		Action:          action,
+		Nickname:        strings.TrimSpace(nickname),
+		FirstName:       strings.TrimSpace(firstName),
+		ScheduleText:    strings.TrimSpace(scheduleText),
+		ScheduleHasYear: scheduleTextHasExplicitYear(scheduleText),
 	}, nil
 }
 
@@ -1470,7 +1473,13 @@ func normalizeAction(action string) string {
 func isHelpCommand(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = strings.ReplaceAll(text, " ", "")
-	return text == "help" || text == "/help" || text == "/วิธีใช้" || text == "วิธีใช้" || text == "ตัวอย่างคำสั่ง"
+	return text == "help" ||
+		text == "/help" ||
+		text == "/วิธีใช้" ||
+		text == "วิธีใช้" ||
+		text == "/วิธีใช้งาน" ||
+		text == "วิธีใช้งาน" ||
+		text == "ตัวอย่างคำสั่ง"
 }
 
 func isScheduleRequestCommand(text string) bool {
@@ -1497,15 +1506,14 @@ func isConfirmWord(text string) bool {
 
 func commandHelpText() string {
 	return strings.Join([]string{
-		"ตัวอย่างคำสั่ง",
-		"/ตารางเรียน",
-		"/ข้อมูลนักเรียน",
-		"/อัพเดท แพรว แพรวา 9/5 13:00-15:00",
-		"/คอนเฟิร์ม แพรว แพรวา",
-		"/ไม่คอนเฟิร์ม แพรว แพรวา",
-		"/ลา แพรว แพรวา",
-		"/เข้าเรียน แพรว แพรวา",
-		"/คอนเฟิร์ม แพรว แพรวา 9/5/2570 13:00-15:00",
+		"วิธีใช้งาน",
+		"/ตารางเรียน - ดูตารางในแท็บสัปดาห์นี้",
+		"/ข้อมูลนักเรียน - ดูนักเรียนที่ยังเรียนไม่จบ",
+		"/อัพเดท ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"/ลา ชื่อเล่น ชื่อจริง",
+		"/เข้าเรียน ชื่อเล่น ชื่อจริง",
 	}, "\n")
 }
 
@@ -1674,14 +1682,23 @@ func lessonDateRangeText(lessons []StudentLesson) string {
 }
 
 func formatCompactLessonLine(lesson StudentLesson) string {
+	return formatCompactLessonLineWithYear(lesson, false)
+}
+
+func formatCompactLessonLineWithYear(lesson StudentLesson, showYear bool) string {
+	statusPart := ""
+	if strings.TrimSpace(lesson.LearningStatus) != "" {
+		statusPart = " | " + strings.TrimSpace(lesson.LearningStatus)
+	}
 	return fmt.Sprintf(
-		"%s %s (%s) | %s\n%s | %s | เหลือ %d ชม.",
+		"%s %s (%s) | %s\n%s | %s%s | เหลือ %d ชม.",
 		confirmEmoji(lesson),
 		lesson.Nickname,
 		lesson.FullName,
 		lesson.Course,
-		formatShortLessonTime(lesson.NextStart, lesson.NextEnd),
+		formatShortLessonTimeWithYear(lesson.NextStart, lesson.NextEnd, showYear),
 		shortHourLabel(lesson),
+		statusPart,
 		remainingHours(lesson),
 	)
 }
@@ -1792,16 +1809,16 @@ func fallbackText(value string, fallback string) string {
 	return value
 }
 
-func formatUpdateNotification(lesson StudentLesson) string {
-	return "🔄 อัพเดทเวลาเรียน\n" + formatCompactLessonLine(lesson)
+func formatUpdateNotification(lesson StudentLesson, showYear bool) string {
+	return "🔄 อัพเดทเวลาเรียน\n" + formatCompactLessonLineWithYear(lesson, showYear)
 }
 
-func formatConfirmNotification(lesson StudentLesson) string {
-	return "✅ คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
+func formatConfirmNotification(lesson StudentLesson, showYear bool) string {
+	return "✅ คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLineWithYear(lesson, showYear)
 }
 
-func formatUnconfirmNotification(lesson StudentLesson) string {
-	return "⏳ ไม่คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
+func formatUnconfirmNotification(lesson StudentLesson, showYear bool) string {
+	return "⏳ ไม่คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLineWithYear(lesson, showYear)
 }
 
 func formatLearningStatusNotification(lesson StudentLesson, status string) string {
@@ -1816,6 +1833,23 @@ func confirmEmoji(lesson StudentLesson) string {
 }
 
 func formatShortLessonTime(start time.Time, end time.Time) string {
+	return formatShortLessonTimeWithYear(start, end, false)
+}
+
+func formatShortLessonTimeWithYear(start time.Time, end time.Time, showYear bool) string {
+	if showYear {
+		return fmt.Sprintf(
+			"%s %d %s %d %02d:%02d-%02d:%02d",
+			thaiShortWeekdays[start.Weekday()],
+			start.Day(),
+			thaiShortMonths[start.Month()-1],
+			start.Year()+543,
+			start.Hour(),
+			start.Minute(),
+			end.Hour(),
+			end.Minute(),
+		)
+	}
 	return fmt.Sprintf(
 		"%s %d %s %02d:%02d-%02d:%02d",
 		thaiShortWeekdays[start.Weekday()],
@@ -1970,6 +2004,24 @@ func parseSchedule(text string, loc *time.Location) (time.Time, time.Time, bool)
 		return start, end, true
 	}
 	return time.Time{}, time.Time{}, false
+}
+
+func scheduleTextHasExplicitYear(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`\d{4}-\d{1,2}-\d{1,2}`),
+		regexp.MustCompile(`\d{1,2}[/-]\d{1,2}[/-]\d{2,4}`),
+		regexp.MustCompile(`\d{1,2}\s*[ก-๙.]+\s+\d{2,4}(?:\s|$)`),
+	}
+	for _, pattern := range patterns {
+		if pattern.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseISODateSchedule(text string, loc *time.Location) (time.Time, time.Time, bool) {

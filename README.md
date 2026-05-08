@@ -133,6 +133,12 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 
 ## คำสั่งใน LINE Group
 
+ดูวิธีใช้งานแบบย่อ:
+
+```text
+/วิธีใช้งาน
+```
+
 ขอตารางเรียนจาก tab `สัปดาห์นี้`:
 
 ```text

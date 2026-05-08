@@ -540,6 +540,7 @@ func (r weeklyRecord) toStudentLesson(start, end time.Time, loc *time.Location) 
 		NextEnd:        end,
 		ScheduleText:   formatThaiSchedule(start, end),
 		Confirmed:      r.Confirmed,
+		LearningStatus: r.LearningStatus,
 		UpdatedAt:      time.Now().In(loc),
 	}
 }
@@ -558,6 +559,7 @@ func (r overviewRecord) toStudentLesson(start, end time.Time, confirmed bool, lo
 		NextEnd:        end,
 		ScheduleText:   formatThaiSchedule(start, end),
 		Confirmed:      confirmed,
+		LearningStatus: "เข้าเรียนปกติ",
 		UpdatedAt:      time.Now().In(loc),
 	}
 }
