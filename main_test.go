@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -271,6 +273,7 @@ func TestHelpCommandThaiUsage(t *testing.T) {
 		"📌 คำสั่งใน LINE Group",
 		"/วิธีใช้งาน",
 		"/ตารางเรียน",
+		"/groupid",
 		"\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้",
 		"/ข้อมูลนักเรียน",
 		"/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
@@ -291,6 +294,22 @@ func TestHelpCommandThaiUsage(t *testing.T) {
 	}
 }
 
+func TestGroupIDCommand(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/groupid", store, loc, "Cgroup123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected group id command to be handled")
+	}
+	if !strings.Contains(response, "Cgroup123") || !strings.Contains(response, "LINE_GROUP_IDS") {
+		t.Fatalf("expected group id response, got %q", response)
+	}
+}
+
 func TestCommandsWithoutSlashAreIgnored(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
@@ -303,6 +322,36 @@ func TestCommandsWithoutSlashAreIgnored(t *testing.T) {
 		if handled {
 			t.Fatalf("expected command without slash to be ignored: %q response=%q", text, response)
 		}
+	}
+}
+
+func TestHealthHandler(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	healthHandler(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "ok") {
+		t.Fatalf("expected ok body, got %q", rec.Body.String())
+	}
+}
+
+func TestValidTaskToken(t *testing.T) {
+	t.Setenv("NOTIFY_TASK_TOKEN", "secret-token")
+
+	req := httptest.NewRequest(http.MethodPost, "/tasks/notify-daily", nil)
+	req.Header.Set("X-Task-Token", "secret-token")
+	if !validTaskToken(req) {
+		t.Fatal("expected task token to be valid")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/tasks/notify-daily", nil)
+	req.Header.Set("X-Task-Token", "wrong")
+	if validTaskToken(req) {
+		t.Fatal("expected wrong task token to be invalid")
 	}
 }
 

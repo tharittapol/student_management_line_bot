@@ -19,6 +19,7 @@ build/
 go.work
 go.work.sum
 coverage.out
+.gocache/
 
 # Logs and temporary files
 *.log

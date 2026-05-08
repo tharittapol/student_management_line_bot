@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
@@ -13,11 +15,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -1254,6 +1258,11 @@ func lineWebhookHandler(store LessonStore, lineClient *LineClient, loc *time.Loc
 			if event.Source.GroupID != "" {
 				log.Println("STAFF GROUP ID =", event.Source.GroupID)
 				if !lineClient.AllowsGroup(event.Source.GroupID) {
+					if event.Type == "message" && event.Message.Type == "text" && isGroupIDCommand(event.Message.Text) {
+						if sendErr := sendImmediateResponse(lineClient, event, formatGroupIDResponse(event.Source.GroupID)); sendErr != nil {
+							log.Println("send LINE group id response error:", sendErr)
+						}
+					}
 					log.Println("ignored LINE group not listed in LINE_GROUP_IDS:", event.Source.GroupID)
 					continue
 				}
@@ -1265,7 +1274,7 @@ func lineWebhookHandler(store LessonStore, lineClient *LineClient, loc *time.Loc
 				continue
 			}
 
-			response, handled, err := processStaffCommand(event.Message.Text, store, loc)
+			response, handled, err := processStaffCommand(event.Message.Text, store, loc, event.Source.GroupID)
 			if !handled {
 				continue
 			}
@@ -1282,7 +1291,7 @@ func lineWebhookHandler(store LessonStore, lineClient *LineClient, loc *time.Loc
 	}
 }
 
-func processStaffCommand(text string, store LessonStore, loc *time.Location) (string, bool, error) {
+func processStaffCommand(text string, store LessonStore, loc *time.Location, sourceGroupID ...string) (string, bool, error) {
 	normalized := strings.TrimSpace(text)
 	if normalized == "" {
 		return "", false, nil
@@ -1293,6 +1302,13 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 
 	if isHelpCommand(normalized) {
 		return commandHelpText(), true, nil
+	}
+	if isGroupIDCommand(normalized) {
+		groupID := ""
+		if len(sourceGroupID) > 0 {
+			groupID = sourceGroupID[0]
+		}
+		return formatGroupIDResponse(groupID), true, nil
 	}
 	if isScheduleRequestCommand(normalized) {
 		return formatWeeklyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
@@ -1488,6 +1504,25 @@ func isScheduleRequestCommand(text string) bool {
 	return text == "/ตารางเรียน"
 }
 
+func isGroupIDCommand(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	text = strings.ReplaceAll(text, " ", "")
+	return text == "/groupid" || text == "/group-id" || text == "/ไอดีกลุ่ม" || text == "/group"
+}
+
+func formatGroupIDResponse(groupID string) string {
+	groupID = strings.TrimSpace(groupID)
+	if groupID == "" {
+		return "คำสั่งนี้ใช้ใน LINE group เท่านั้น"
+	}
+	return strings.Join([]string{
+		"🆔 LINE group id",
+		groupID,
+		"",
+		"นำค่านี้ไปเพิ่มใน `LINE_GROUP_IDS` แล้ว deploy Cloud Run revision ใหม่",
+	}, "\n")
+}
+
 func isStudentScheduleRequestCommand(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	return strings.HasPrefix(text, "/ข้อมูลนักเรียน") || strings.HasPrefix(text, "/นักเรียน")
@@ -1513,6 +1548,9 @@ func commandHelpText() string {
 		"",
 		"📚 ตารางเรียนจากแท็บสัปดาห์นี้",
 		"/ตารางเรียน",
+		"",
+		"🆔 ดู LINE group id ของกลุ่มนี้",
+		"/groupid",
 		"",
 		"👥 นักเรียนที่ยังเรียนไม่จบ (\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้)",
 		"/ข้อมูลนักเรียน",
@@ -2231,6 +2269,58 @@ func registerConfiguredLineGroups(store LessonStore, lineClient *LineClient) {
 	}
 }
 
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok\n"))
+}
+
+func notifyDailyTaskHandler(store LessonStore, lineClient *LineClient, loc *time.Location) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if !validTaskToken(r) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("unauthorized\n"))
+			return
+		}
+		if err := notifyDailyLessons(store, lineClient, loc); err != nil {
+			log.Println("manual lesson notification error:", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(err.Error() + "\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	}
+}
+
+func validTaskToken(r *http.Request) bool {
+	expected := strings.TrimSpace(os.Getenv("NOTIFY_TASK_TOKEN"))
+	if expected == "" {
+		return false
+	}
+	actual := strings.TrimSpace(r.Header.Get("X-Task-Token"))
+	if actual == "" {
+		actual = strings.TrimSpace(r.URL.Query().Get("token"))
+	}
+	if actual == "" {
+		const bearerPrefix = "Bearer "
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if strings.HasPrefix(auth, bearerPrefix) {
+			actual = strings.TrimSpace(strings.TrimPrefix(auth, bearerPrefix))
+		}
+	}
+	return subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
+}
+
 func main() {
 	loc, err := time.LoadLocation("Asia/Bangkok")
 	if err != nil {
@@ -2240,7 +2330,11 @@ func main() {
 	lineClient := NewLineClient()
 	store := newLessonStore(loc, lineClient)
 
-	startDailyNotifier(store, lineClient, loc)
+	if !strings.EqualFold(os.Getenv("DISABLE_DAILY_SCHEDULER"), "true") {
+		startDailyNotifier(store, lineClient, loc)
+	} else {
+		log.Println("in-process daily lesson notifier disabled")
+	}
 
 	if strings.EqualFold(os.Getenv("RUN_DAILY_ON_START"), "true") {
 		if err := notifyDailyLessons(store, lineClient, loc); err != nil {
@@ -2248,13 +2342,46 @@ func main() {
 		}
 	}
 
-	http.HandleFunc("/line/webhook", lineWebhookHandler(store, lineClient, loc))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", healthHandler)
+	mux.HandleFunc("/readyz", healthHandler)
+	mux.HandleFunc("/line/webhook", lineWebhookHandler(store, lineClient, loc))
+	mux.HandleFunc("/tasks/notify-daily", notifyDailyTaskHandler(store, lineClient, loc))
 
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = "8080"
 	}
 
-	log.Println("Server started on :" + port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Println("Server started on :" + port)
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("Shutdown signal received")
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Fatal("server shutdown error:", err)
+	}
+	log.Println("Server stopped")
 }

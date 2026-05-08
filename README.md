@@ -147,6 +147,12 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 /ตารางเรียน
 ```
 
+🆔 ดู LINE group id ของกลุ่มนี้
+
+```text
+/groupid
+```
+
 👥 นักเรียนที่ยังเรียนไม่จบ (`ชื่อเล่น ชื่อจริง` ดูได้จากคำสั่งนี้)
 
 ```text
@@ -211,3 +217,236 @@ Webhook path:
 ```text
 http://localhost:8080/line/webhook
 ```
+
+Health check:
+
+```text
+http://localhost:8080/healthz
+http://localhost:8080/readyz
+```
+
+Manual daily notification endpoint สำหรับ Cloud Scheduler:
+
+```text
+POST http://localhost:8080/tasks/notify-daily
+Header: X-Task-Token: <NOTIFY_TASK_TOKEN>
+```
+
+## Deploy บน Google Cloud Run
+
+ตัวอย่างด้านล่างใช้ PowerShell และ deploy ด้วย Docker image ผ่าน Artifact Registry
+
+### 1. ตั้งค่าตัวแปร
+
+```powershell
+$PROJECT_ID = "your-gcp-project-id"
+$REGION = "asia-southeast1"
+$SERVICE = "student-management-line-bot"
+$REPO = "line-bot"
+$IMAGE = "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
+
+gcloud auth login
+gcloud config set project $PROJECT_ID
+```
+
+### 2. เปิด API ที่ต้องใช้
+
+```powershell
+gcloud services enable run.googleapis.com
+gcloud services enable artifactregistry.googleapis.com
+gcloud services enable cloudbuild.googleapis.com
+gcloud services enable secretmanager.googleapis.com
+gcloud services enable cloudscheduler.googleapis.com
+gcloud services enable sheets.googleapis.com
+```
+
+### 3. สร้าง Artifact Registry
+
+ทำครั้งแรกครั้งเดียว:
+
+```powershell
+gcloud artifacts repositories create $REPO `
+  --repository-format=docker `
+  --location=$REGION `
+  --description="LINE bot containers"
+```
+
+ถ้ามี repository นี้อยู่แล้ว ข้ามขั้นตอนนี้ได้
+
+### 4. เตรียม Secret Manager
+
+สร้าง secret จากค่าจริงของคุณ:
+
+```powershell
+"YOUR_LINE_CHANNEL_SECRET" | gcloud secrets create line-channel-secret --data-file=-
+"YOUR_LINE_CHANNEL_ACCESS_TOKEN" | gcloud secrets create line-channel-access-token --data-file=-
+"YOUR_GOOGLE_SERVICE_ACCOUNT_JSON_BASE64" | gcloud secrets create google-service-account-json-base64 --data-file=-
+
+$NOTIFY_TASK_TOKEN = [guid]::NewGuid().ToString("N")
+$NOTIFY_TASK_TOKEN | gcloud secrets create notify-task-token --data-file=-
+```
+
+ถ้า secret มีอยู่แล้วและต้องการอัปเดต:
+
+```powershell
+"NEW_VALUE" | gcloud secrets versions add line-channel-secret --data-file=-
+```
+
+หมายเหตุ: ค่า `GOOGLE_SERVICE_ACCOUNT_JSON_BASE64` สร้างจากไฟล์ service account JSON ได้ด้วย:
+
+```powershell
+$json = Get-Content .\service-account.json -Raw -Encoding UTF8
+[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($json))
+```
+
+อย่าลืม share Google Spreadsheet ให้ `client_email` ใน service account JSON เป็น Editor
+
+### 5. Build image
+
+```powershell
+gcloud builds submit --tag $IMAGE
+```
+
+### 6. Deploy Cloud Run
+
+กำหนด `LINE_GROUP_IDS` เป็น group ที่อนุญาต คั่นด้วย `;` เพื่อลดปัญหา comma escaping ใน gcloud:
+
+```powershell
+$GOOGLE_SHEET_ID = "your_google_spreadsheet_id"
+$LINE_GROUP_IDS = "Cxxxxxxxxxxxxxxxx;Cyyyyyyyyyyyyyyyy"
+
+gcloud run deploy $SERVICE `
+  --image $IMAGE `
+  --region $REGION `
+  --platform managed `
+  --allow-unauthenticated `
+  --port 8080 `
+  --memory 512Mi `
+  --cpu 1 `
+  --max-instances 3 `
+  --set-env-vars "TZ=Asia/Bangkok,GOOGLE_SHEET_ID=$GOOGLE_SHEET_ID,GOOGLE_SHEETS_INIT_SCHEMA=true,RUN_DAILY_ON_START=false,DISABLE_DAILY_SCHEDULER=true,LINE_GROUP_IDS=$LINE_GROUP_IDS" `
+  --set-secrets "LINE_CHANNEL_SECRET=line-channel-secret:latest,LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest,GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=google-service-account-json-base64:latest,NOTIFY_TASK_TOKEN=notify-task-token:latest"
+```
+
+เอา service URL:
+
+```powershell
+$SERVICE_URL = gcloud run services describe $SERVICE --region $REGION --format "value(status.url)"
+$SERVICE_URL
+```
+
+ทดสอบ health:
+
+```powershell
+Invoke-WebRequest "$SERVICE_URL/healthz"
+```
+
+### 7. ตั้ง LINE Webhook
+
+ใน LINE Developers Console:
+
+- ไปที่ Messaging API channel
+- ตั้ง Webhook URL เป็น:
+
+```text
+https://your-cloud-run-url/line/webhook
+```
+
+- เปิด `Use webhook`
+- เปิด `Allow bot to join group chats`
+- กด Verify webhook
+
+### 8. ตั้ง Cloud Scheduler สำหรับ routine 09:00
+
+ใช้ token เดียวกับ secret `notify-task-token` ที่สร้างไว้ในข้อ 4:
+
+```powershell
+gcloud scheduler jobs create http line-bot-daily-notify `
+  --location=$REGION `
+  --schedule="0 9 * * *" `
+  --time-zone="Asia/Bangkok" `
+  --uri="$SERVICE_URL/tasks/notify-daily" `
+  --http-method=POST `
+  --headers="X-Task-Token=$NOTIFY_TASK_TOKEN"
+```
+
+ทดสอบยิง job:
+
+```powershell
+gcloud scheduler jobs run line-bot-daily-notify --location=$REGION
+```
+
+ดู log:
+
+```powershell
+gcloud run services logs read $SERVICE --region $REGION --limit 100
+```
+
+## เพิ่ม LINE Group ใหม่หลังขึ้น Cloud Run
+
+ถ้าต้องให้ bot เข้ากลุ่มใหม่:
+
+1. Invite LINE OA/bot เข้า group ใหม่
+2. ใน group ใหม่ พิมพ์:
+
+```text
+/groupid
+```
+
+3. Bot จะตอบ group id เช่น `Cxxxxxxxxxxxxxxxx`
+4. เอา group id ใหม่นั้นไปต่อท้าย `LINE_GROUP_IDS`
+
+ตัวอย่าง:
+
+```powershell
+$LINE_GROUP_IDS = "ColdGroupId;CnewGroupId"
+
+gcloud run services update $SERVICE `
+  --region $REGION `
+  --update-env-vars "LINE_GROUP_IDS=$LINE_GROUP_IDS"
+```
+
+Cloud Run จะสร้าง revision ใหม่อัตโนมัติ หลังอัปเดตเสร็จให้ลองพิมพ์ในกลุ่มใหม่:
+
+```text
+/วิธีใช้งาน
+/ตารางเรียน
+```
+
+หมายเหตุ: `/groupid` เป็นคำสั่งพิเศษที่ bot จะตอบได้แม้ group นั้นยังไม่อยู่ใน `LINE_GROUP_IDS` เพื่อใช้ onboarding group ใหม่ ส่วนคำสั่งอื่นจะทำงานเฉพาะ group ที่อยู่ใน allowlist แล้ว
+
+## แก้ไขโค้ดและ deploy ใหม่
+
+หลังแก้โค้ด:
+
+```powershell
+go test .
+
+$IMAGE = "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
+gcloud builds submit --tag $IMAGE
+
+gcloud run deploy $SERVICE `
+  --image $IMAGE `
+  --region $REGION `
+  --platform managed
+```
+
+ถ้าแก้เฉพาะ env var ไม่ต้อง build image ใหม่ ใช้:
+
+```powershell
+gcloud run services update $SERVICE `
+  --region $REGION `
+  --update-env-vars "LINE_GROUP_IDS=Cgroup1;Cgroup2"
+```
+
+ถ้าแก้ secret เช่น LINE token หรือ Google credential:
+
+```powershell
+"NEW_SECRET_VALUE" | gcloud secrets versions add line-channel-access-token --data-file=-
+
+gcloud run services update $SERVICE `
+  --region $REGION `
+  --update-secrets "LINE_CHANNEL_ACCESS_TOKEN=line-channel-access-token:latest"
+```
+
+Cloud Run revision เป็น immutable ดังนั้นทุก deploy/update จะได้ revision ใหม่ ถ้ามีปัญหาให้ rollback ใน Google Cloud Console หรือใช้ traffic กลับไป revision ก่อนหน้า
