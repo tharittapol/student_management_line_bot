@@ -8,7 +8,6 @@ services:
       PORT: "8080"
       TZ: Asia/Bangkok
       GOOGLE_SHEETS_INIT_SCHEMA: ${GOOGLE_SHEETS_INIT_SCHEMA:-true}
-      GOOGLE_SHEETS_SEED_DIR: ${GOOGLE_SHEETS_SEED_DIR:-db/google_sheets}
     ports:
       - "${HOST_PORT:-8080}:8080"
     restart: unless-stopped

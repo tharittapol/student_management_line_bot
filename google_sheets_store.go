@@ -9,7 +9,6 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -19,7 +18,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -339,11 +337,6 @@ func NewGoogleSheetsLessonStore(spreadsheetID string, loc *time.Location) (*Goog
 			return nil, err
 		}
 	}
-	if seedDir := strings.TrimSpace(os.Getenv("GOOGLE_SHEETS_SEED_DIR")); seedDir != "" {
-		if err := store.SeedFromCSVDir(context.Background(), seedDir); err != nil {
-			return nil, err
-		}
-	}
 	return store, nil
 }
 
@@ -368,50 +361,6 @@ func (s *GoogleSheetsLessonStore) EnsureSchema(ctx context.Context) error {
 			if err := s.client.valuesUpdate(ctx, headerRange, [][]string{headers}); err != nil {
 				return fmt.Errorf("write header %s: %w", table, err)
 			}
-		}
-	}
-	return nil
-}
-
-func (s *GoogleSheetsLessonStore) SeedFromCSVDir(ctx context.Context, dir string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for _, table := range googleSheetTableOrder {
-		existing, err := s.loadTable(ctx, table)
-		if err != nil {
-			return err
-		}
-		if len(existing) > 0 {
-			continue
-		}
-		path := filepath.Join(dir, table+".csv")
-		file, err := os.Open(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		reader := csv.NewReader(file)
-		reader.FieldsPerRecord = -1
-		rows, readErr := reader.ReadAll()
-		closeErr := file.Close()
-		if readErr != nil {
-			return fmt.Errorf("read %s: %w", path, readErr)
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		if len(rows) <= 1 {
-			continue
-		}
-		headers := googleSheetHeaders[table]
-		if !sameStringSlice(rows[0], headers) {
-			return fmt.Errorf("seed %s header mismatch", path)
-		}
-		if err := s.client.valuesAppend(ctx, quoteSheetName(table)+"!A1", rows[1:]); err != nil {
-			return fmt.Errorf("seed %s: %w", table, err)
 		}
 	}
 	return nil

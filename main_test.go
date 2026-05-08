@@ -99,7 +99,7 @@ func TestProcessUnconfirmCommand(t *testing.T) {
 	}
 }
 
-func TestProcessAddStudentCommand(t *testing.T) {
+func TestAddStudentCommandIsRemoved(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
 
@@ -107,19 +107,8 @@ func TestProcessAddStudentCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !handled {
-		t.Fatal("expected add student command to be handled")
-	}
-	if !strings.Contains(response, "➕ เพิ่มนักเรียนแล้ว") {
-		t.Fatalf("expected add student response, got %q", response)
-	}
-
-	lesson := findLesson(t, store.ListLessons(), "พลอย", "Little 3D รุ่นที่ 1")
-	if lesson.FirstName != "พลอยลดา" {
-		t.Fatalf("expected first name พลอยลดา, got %q", lesson.FirstName)
-	}
-	if lesson.TotalHours != 8 {
-		t.Fatalf("expected 8 total hours, got %d", lesson.TotalHours)
+	if handled {
+		t.Fatalf("expected add student command to be removed, got response %q", response)
 	}
 }
 
@@ -238,18 +227,39 @@ func TestProcessStudentScheduleRequestCommand(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
 
-	response, handled, err := processStaffCommand("/ข้อมูลนักเรียน แพรว แพรวา", store, loc)
+	response, handled, err := processStaffCommand("/ข้อมูลนักเรียน", store, loc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !handled {
 		t.Fatal("expected student schedule request command to be handled")
 	}
-	if !strings.Contains(response, "👥 ข้อมูลตารางรายนักเรียน") {
-		t.Fatalf("expected student schedule header, got %q", response)
+	if !strings.Contains(response, "👥 นักเรียนที่ยังเรียนไม่จบ") {
+		t.Fatalf("expected active student list header, got %q", response)
 	}
-	if !strings.Contains(response, "เรียนแล้ว:") || !strings.Contains(response, "ถัดไป:") || !strings.Contains(response, "ปกติ:") {
-		t.Fatalf("expected student schedule details, got %q", response)
+	if !strings.Contains(response, "แพรว - แพรวา") || !strings.Contains(response, "English Foundation") {
+		t.Fatalf("expected compact student list, got %q", response)
+	}
+	if strings.Contains(response, "เรียนแล้ว:") || strings.Contains(response, "ถัดไป:") || strings.Contains(response, "ปกติ:") {
+		t.Fatalf("expected individual student details to be removed, got %q", response)
+	}
+}
+
+func TestSplitLongLineMessage(t *testing.T) {
+	message := strings.Join([]string{
+		strings.Repeat("ก", 12),
+		strings.Repeat("ข", 12),
+		strings.Repeat("ค", 12),
+	}, "\n")
+
+	parts := splitLongLineMessage(message, 20)
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 split messages, got %d: %#v", len(parts), parts)
+	}
+	for _, part := range parts {
+		if len([]rune(part)) > 20 {
+			t.Fatalf("message part exceeds max length: %q", part)
+		}
 	}
 }
 

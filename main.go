@@ -24,8 +24,10 @@ import (
 )
 
 const (
-	linePushURL  = "https://api.line.me/v2/bot/message/push"
-	lineReplyURL = "https://api.line.me/v2/bot/message/reply"
+	linePushURL           = "https://api.line.me/v2/bot/message/push"
+	lineReplyURL          = "https://api.line.me/v2/bot/message/reply"
+	lineTextMaxLength     = 4500
+	lineMessageBatchLimit = 5
 )
 
 type LineWebhook struct {
@@ -116,23 +118,82 @@ func (c *LineClient) FirstTargetGroupID() string {
 }
 
 func (c *LineClient) SendText(to string, text string) error {
+	return c.SendTextParts(to, splitLongLineMessage(text, lineTextMaxLength))
+}
+
+func (c *LineClient) SendTextParts(to string, parts []string) error {
 	if !isLikelyLineTargetID(to) {
 		return errors.New("missing or invalid LINE target ID")
 	}
-	return c.send(linePushURL, map[string]any{
-		"to":       to,
-		"messages": []lineTextMessage{{Type: "text", Text: text}},
-	})
+	parts = cleanLineTextParts(parts)
+	if len(parts) == 0 {
+		return nil
+	}
+	for _, batch := range batchLineTextParts(parts, lineMessageBatchLimit) {
+		if err := c.send(linePushURL, map[string]any{
+			"to":       to,
+			"messages": lineTextMessages(batch),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *LineClient) ReplyText(replyToken string, text string) error {
+	return c.ReplyTextParts(replyToken, splitLongLineMessage(text, lineTextMaxLength))
+}
+
+func (c *LineClient) ReplyTextParts(replyToken string, parts []string) error {
 	if strings.TrimSpace(replyToken) == "" {
 		return errors.New("missing LINE reply token")
 	}
+	parts = cleanLineTextParts(parts)
+	if len(parts) == 0 {
+		return nil
+	}
+	if len(parts) > lineMessageBatchLimit {
+		return fmt.Errorf("LINE reply can contain at most %d messages", lineMessageBatchLimit)
+	}
 	return c.send(lineReplyURL, map[string]any{
 		"replyToken": replyToken,
-		"messages":   []lineTextMessage{{Type: "text", Text: text}},
+		"messages":   lineTextMessages(parts),
 	})
+}
+
+func lineTextMessages(parts []string) []lineTextMessage {
+	messages := make([]lineTextMessage, 0, len(parts))
+	for _, part := range parts {
+		messages = append(messages, lineTextMessage{Type: "text", Text: part})
+	}
+	return messages
+}
+
+func cleanLineTextParts(parts []string) []string {
+	cleaned := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			cleaned = append(cleaned, part)
+		}
+	}
+	return cleaned
+}
+
+func batchLineTextParts(parts []string, size int) [][]string {
+	if size <= 0 {
+		size = lineMessageBatchLimit
+	}
+	var batches [][]string
+	for len(parts) > 0 {
+		n := size
+		if len(parts) < n {
+			n = len(parts)
+		}
+		batches = append(batches, parts[:n])
+		parts = parts[n:]
+	}
+	return batches
 }
 
 func (c *LineClient) send(url string, payload map[string]any) error {
@@ -1233,15 +1294,6 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 	}
 
 	switch command.Action {
-	case "add_student":
-		if command.Course == "" {
-			return "", true, errors.New("คำสั่งเพิ่มนักเรียนต้องเป็น: /เพิ่มนักเรียน ชื่อเล่น ชื่อจริง/คอร์ส/ชั่วโมงรวม เช่น /เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8")
-		}
-		lesson, err := store.AddStudent(command.Nickname, command.FirstName, command.Course, command.TotalHours, command.ScheduleText)
-		if err != nil {
-			return "", true, err
-		}
-		return formatAddStudentNotification(lesson), true, nil
 	case "update":
 		if command.ScheduleText == "" {
 			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น ชื่อจริง วันที่ เวลา เช่น /อัพเดท แพรว แพรวา 9/5 13:00-15:00")
@@ -1272,8 +1324,6 @@ type compactSlashCommand struct {
 	Action       string
 	Nickname     string
 	FirstName    string
-	Course       string
-	TotalHours   int
 	ScheduleText string
 }
 
@@ -1300,10 +1350,6 @@ func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
 		return compactSlashCommand{}, errors.New("กรุณาระบุชื่อเล่นและชื่อจริงนักเรียน")
 	}
 
-	if action == "add_student" {
-		return parseAddStudentCommand(body)
-	}
-
 	if usesSlashSeparator {
 		body = strings.Replace(body, "/", " ", 2)
 	}
@@ -1328,76 +1374,32 @@ func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
 	}, nil
 }
 
-func parseAddStudentCommand(body string) (compactSlashCommand, error) {
-	nickname, firstName, rest, err := parseTwoNamesAndRest(body)
-	if err != nil {
-		return compactSlashCommand{}, err
-	}
-
-	parts := strings.Split(rest, "/")
-	course := ""
-	totalHours := 8
-	scheduleText := ""
-	if len(parts) > 0 {
-		course = strings.TrimSpace(parts[0])
-	}
-	if len(parts) > 1 && strings.TrimSpace(parts[1]) != "" {
-		parsedHours, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err != nil {
-			return compactSlashCommand{}, errors.New("ชั่วโมงรวมต้องเป็นตัวเลข เช่น 8 หรือ 20")
-		}
-		totalHours = parsedHours
-	}
-	if len(parts) > 2 {
-		scheduleText = strings.TrimSpace(strings.Join(parts[2:], "/"))
-	}
-	if course == "" {
-		return compactSlashCommand{}, errors.New("กรุณาระบุคอร์สหลัง / เช่น /เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8")
-	}
-	return compactSlashCommand{
-		Action:       "add_student",
-		Nickname:     nickname,
-		FirstName:    firstName,
-		Course:       course,
-		TotalHours:   totalHours,
-		ScheduleText: scheduleText,
-	}, nil
-}
-
-func parseTwoNamesAndRest(body string) (string, string, string, error) {
-	fields := strings.Fields(strings.TrimSpace(body))
-	if len(fields) < 2 {
-		return "", "", "", errors.New("กรุณาระบุเป็น ชื่อเล่น ชื่อจริง")
-	}
-
-	nickname := fields[0]
-	afterNickname := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body), nickname))
-	firstName := ""
-	rest := ""
-	if slashIndex := strings.Index(afterNickname, "/"); slashIndex >= 0 {
-		firstName = strings.TrimSpace(afterNickname[:slashIndex])
-		rest = strings.TrimSpace(strings.TrimLeft(afterNickname[slashIndex:], "/"))
-	} else {
-		firstName = fields[1]
-		rest = strings.TrimSpace(strings.TrimPrefix(afterNickname, firstName))
-	}
-	if firstName == "" {
-		return "", "", "", errors.New("กรุณาระบุชื่อจริง")
-	}
-	return strings.TrimSpace(nickname), strings.TrimSpace(firstName), strings.TrimSpace(rest), nil
-}
-
 func sendImmediateResponse(lineClient *LineClient, event LineEvent, response string) error {
 	if strings.TrimSpace(response) == "" {
 		return nil
 	}
+	parts := splitLongLineMessage(response, lineTextMaxLength)
 	if strings.TrimSpace(event.ReplyToken) != "" {
-		return lineClient.ReplyText(event.ReplyToken, response)
+		replyCount := len(parts)
+		if replyCount > lineMessageBatchLimit {
+			replyCount = lineMessageBatchLimit
+		}
+		if err := lineClient.ReplyTextParts(event.ReplyToken, parts[:replyCount]); err != nil {
+			return err
+		}
+		parts = parts[replyCount:]
+		if len(parts) == 0 {
+			return nil
+		}
 	}
-	if strings.TrimSpace(event.Source.GroupID) != "" {
-		return lineClient.SendText(event.Source.GroupID, response)
+	targetID := strings.TrimSpace(event.Source.GroupID)
+	if targetID == "" {
+		targetID = strings.TrimSpace(event.Source.UserID)
 	}
-	return lineClient.SendText(lineClient.FirstTargetGroupID(), response)
+	if targetID != "" {
+		return lineClient.SendTextParts(targetID, parts)
+	}
+	return lineClient.SendTextParts(lineClient.FirstTargetGroupID(), parts)
 }
 
 func splitCommandParts(text string) []string {
@@ -1419,8 +1421,6 @@ func normalizeAction(action string) string {
 	action = strings.ReplaceAll(action, "์", "")
 
 	switch {
-	case strings.Contains(action, "เพิ่มนักเรียน") || strings.Contains(action, "addstudent") || strings.Contains(action, "add_student"):
-		return "add_student"
 	case strings.Contains(action, "ไม่คอนเฟ") || strings.Contains(action, "unconfirm") || strings.Contains(action, "notconfirm"):
 		return "unconfirm"
 	case strings.Contains(action, "อัพ") || strings.Contains(action, "อัป") || strings.Contains(action, "update") || strings.Contains(action, "เลื่อน"):
@@ -1450,23 +1450,7 @@ func isStudentScheduleRequestCommand(text string) bool {
 }
 
 func processStudentScheduleRequest(text string, store LessonStore) (string, bool, error) {
-	body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "/ข้อมูลนักเรียน"))
-	if body == strings.TrimSpace(text) {
-		body = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(text), "/นักเรียน"))
-	}
-	if body == "" {
-		return formatStudentScheduleSummaries(store.ListStudentSchedules()), true, nil
-	}
-
-	fields := strings.Fields(body)
-	if len(fields) < 2 {
-		return "", true, errors.New("คำสั่งข้อมูลนักเรียนต้องเป็น: /ข้อมูลนักเรียน ชื่อเล่น ชื่อจริง")
-	}
-	summaries, err := store.FindStudentSchedules(fields[0], fields[1])
-	if err != nil {
-		return "", true, err
-	}
-	return formatStudentScheduleSummaries(summaries), true, nil
+	return formatStudentScheduleSummaries(store.ListStudentSchedules()), true, nil
 }
 
 func isConfirmWord(text string) bool {
@@ -1481,8 +1465,6 @@ func commandHelpText() string {
 		"ตัวอย่างคำสั่ง",
 		"/ตารางเรียน",
 		"/ข้อมูลนักเรียน",
-		"/ข้อมูลนักเรียน แพรว แพรวา",
-		"/เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8",
 		"/อัพเดท แพรว แพรวา 9/5 13:00-15:00",
 		"/คอนเฟิร์ม แพรว แพรวา",
 		"/ไม่คอนเฟิร์ม แพรว แพรวา",
@@ -1531,10 +1513,8 @@ func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Loc
 
 	message := formatWeeklyLessons(store.ListLessons(), time.Now().In(loc))
 	for _, groupID := range groupIDs {
-		for _, part := range splitLongLineMessage(message, 4500) {
-			if err := lineClient.SendText(groupID, part); err != nil {
-				return fmt.Errorf("send to group %s: %w", groupID, err)
-			}
+		if err := lineClient.SendText(groupID, message); err != nil {
+			return fmt.Errorf("send to group %s: %w", groupID, err)
 		}
 	}
 	return nil
@@ -1555,6 +1535,13 @@ func isLikelyLineTargetID(value string) bool {
 }
 
 func splitLongLineMessage(text string, maxLength int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if maxLength <= 0 {
+		maxLength = lineTextMaxLength
+	}
 	if len([]rune(text)) <= maxLength {
 		return []string{text}
 	}
@@ -1564,19 +1551,47 @@ func splitLongLineMessage(text string, maxLength int) []string {
 	var current strings.Builder
 
 	for _, line := range lines {
-		nextLen := len([]rune(current.String())) + len([]rune(line)) + 1
-		if current.Len() > 0 && nextLen > maxLength {
-			messages = append(messages, strings.TrimSpace(current.String()))
-			current.Reset()
+		segments := splitLongLine(line, maxLength)
+		if len(segments) == 0 {
+			segments = []string{""}
 		}
-		current.WriteString(line)
-		current.WriteString("\n")
+		for _, segment := range segments {
+			nextLen := len([]rune(current.String())) + len([]rune(segment))
+			if current.Len() > 0 {
+				nextLen++
+			}
+			if current.Len() > 0 && nextLen > maxLength {
+				messages = append(messages, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			if current.Len() > 0 {
+				current.WriteString("\n")
+			}
+			current.WriteString(segment)
+		}
 	}
 
 	if strings.TrimSpace(current.String()) != "" {
 		messages = append(messages, strings.TrimSpace(current.String()))
 	}
 	return messages
+}
+
+func splitLongLine(line string, maxLength int) []string {
+	runes := []rune(line)
+	if len(runes) <= maxLength {
+		return []string{line}
+	}
+	segments := make([]string, 0, (len(runes)/maxLength)+1)
+	for len(runes) > 0 {
+		n := maxLength
+		if len(runes) < n {
+			n = len(runes)
+		}
+		segments = append(segments, string(runes[:n]))
+		runes = runes[n:]
+	}
+	return segments
 }
 
 func sevenDayRange(now time.Time) (time.Time, time.Time) {
@@ -1666,38 +1681,26 @@ func sortStudentScheduleSummaries(summaries []StudentScheduleSummary) {
 
 func formatStudentScheduleSummaries(summaries []StudentScheduleSummary) string {
 	if len(summaries) == 0 {
-		return "ยังไม่มีข้อมูลนักเรียน"
+		return "ยังไม่มีนักเรียนที่กำลังเรียนอยู่"
 	}
 
 	var b strings.Builder
-	b.WriteString("👥 ข้อมูลตารางรายนักเรียน")
-	for _, summary := range summaries {
-		b.WriteString("\n\n")
-		b.WriteString(formatStudentScheduleSummary(summary))
+	b.WriteString(fmt.Sprintf("👥 นักเรียนที่ยังเรียนไม่จบ (%d รายการ)", len(summaries)))
+	for i, summary := range summaries {
+		b.WriteString("\n")
+		b.WriteString(formatStudentListLine(i+1, summary))
 	}
 	return b.String()
 }
 
-func formatStudentScheduleSummary(summary StudentScheduleSummary) string {
-	pastLessons := fallbackText(summary.PastLessons, "ยังไม่มีข้อมูล")
-	nextLessons := fallbackText(summary.NextLessons, "ยังไม่มีวันที่ชัดเจน")
-	defaultSchedule := fallbackText(summary.DefaultSchedule, "ยังไม่มี default")
-
-	line := fmt.Sprintf(
-		"👤 %s %s | %s\nเรียนแล้ว: %s\nถัดไป: %s\nปกติ: %s\nเหลือ %d/%d ชม.",
-		summary.Nickname,
-		summary.FirstName,
-		summary.Course,
-		pastLessons,
-		nextLessons,
-		defaultSchedule,
-		summaryRemainingHours(summary),
-		summary.TotalHours,
+func formatStudentListLine(index int, summary StudentScheduleSummary) string {
+	return fmt.Sprintf(
+		"%d. %s - %s | %s",
+		index,
+		fallbackText(summary.Nickname, "-"),
+		fallbackText(summary.FirstName, fallbackText(summary.FullName, "-")),
+		fallbackText(summary.Course, "-"),
 	)
-	if strings.TrimSpace(summary.ScheduleNotes) != "" {
-		line += "\nโน้ต: " + summary.ScheduleNotes
-	}
-	return line
 }
 
 func fallbackText(value string, fallback string) string {
@@ -1708,30 +1711,8 @@ func fallbackText(value string, fallback string) string {
 	return value
 }
 
-func summaryRemainingHours(summary StudentScheduleSummary) int {
-	remaining := summary.TotalHours - summary.CompletedHours
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
 func formatUpdateNotification(lesson StudentLesson) string {
 	return "🔄 อัพเดทเวลาเรียน\n" + formatCompactLessonLine(lesson)
-}
-
-func formatAddStudentNotification(lesson StudentLesson) string {
-	if lesson.NextStart.IsZero() {
-		return fmt.Sprintf(
-			"➕ เพิ่มนักเรียนแล้ว\n%s %s (%s) | %s\nรวม %d ชม. | ยังไม่มีตารางเรียน",
-			confirmEmoji(lesson),
-			lesson.Nickname,
-			lesson.FullName,
-			lesson.Course,
-			lesson.TotalHours,
-		)
-	}
-	return "➕ เพิ่มนักเรียนแล้ว\n" + formatCompactLessonLine(lesson)
 }
 
 func formatConfirmNotification(lesson StudentLesson) string {
@@ -2040,12 +2021,12 @@ func mustAtoi(value string) int {
 func newLessonStore(loc *time.Location, lineClient *LineClient) LessonStore {
 	googleSheetID := strings.TrimSpace(os.Getenv("GOOGLE_SHEET_ID"))
 	if googleSheetID != "" {
-		store, err := NewGoogleSheetsLessonStore(googleSheetID, loc)
+		store, err := NewClassScheduleSheetsLessonStore(googleSheetID, loc)
 		if err != nil {
 			log.Fatal("connect Google Sheets error:", err)
 		}
 		registerConfiguredLineGroups(store, lineClient)
-		log.Println("Using Google Sheets lesson store")
+		log.Println("Using Class Schedule Google Sheets lesson store")
 		return store
 	}
 

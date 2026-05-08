@@ -21,7 +21,6 @@ LINE_STAFF_GROUP_ID=
 GOOGLE_SHEET_ID=your_google_spreadsheet_id
 GOOGLE_SERVICE_ACCOUNT_JSON_BASE64=base64_encoded_service_account_json
 GOOGLE_SHEETS_INIT_SCHEMA=true
-GOOGLE_SHEETS_SEED_DIR=db/google_sheets
 
 RUN_DAILY_ON_START=false
 HOST_PORT=8080
@@ -88,23 +87,18 @@ docker compose down
 ระบบใช้ Google Spreadsheet เป็น database โดย 1 worksheet/tab = 1 table:
 
 ```text
-courses
-students
-enrollments
-course_default_schedules
-enrollment_default_schedules
-lesson_sessions
-enrollment_schedule_notes
-line_groups
+Overview
+ตารางเรียน
+สัปดาห์นี้
 ```
 
-ไฟล์ seed สำหรับ Google Sheets อยู่ที่:
+ให้ Google Sheet เป็น source of truth โดย sync/import ข้อมูลให้มี 3 tab หลักก่อนรัน:
 
-```text
-db/google_sheets/*.csv
-```
+- `Overview`
+- `ตารางเรียน`
+- `สัปดาห์นี้`
 
-ตอน start ถ้า `GOOGLE_SHEETS_INIT_SCHEMA=true` bot จะสร้าง worksheet/header ให้เอง และถ้า sheet นั้นยังว่าง จะ seed จาก `GOOGLE_SHEETS_SEED_DIR`
+ถ้า `GOOGLE_SHEETS_INIT_SCHEMA=true` bot จะตรวจว่า 3 tab หลักมีอยู่จริง ถ้า tab ใดหาย app จะ error เพื่อให้ sync Google Sheet ให้ครบก่อน
 
 การสร้าง credential:
 
@@ -119,30 +113,20 @@ $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
 [Convert]::ToBase64String($bytes)
 ```
 
-โครงสร้างหลัก:
+โครงสร้างหลักยึดตามไฟล์ CSV:
 
-- `courses`: ข้อมูลคอร์ส
-- `students`: นักเรียนและข้อมูลผู้ปกครอง
-- `students.source_key`: key สำหรับข้อมูล import จาก CSV ทำให้ `nickname` + `first_name` ไม่ต้อง unique
-- `enrollments`: นักเรียนเรียนคอร์สไหน ชั่วโมงรวม/ชั่วโมงที่เรียนไปแล้ว, ครู, วันเริ่มเรียน, สถานะจากระบบต้นทาง
-- `course_default_schedules`: ตาราง default/slot เวลาเรียนของแต่ละคอร์สจากหัวตาราง CSV
-- `enrollment_default_schedules`: ตาราง default ราย enrollment ว่านักเรียนคนนี้เรียนปกติวันไหน/เวลาไหน
-- `lesson_sessions`: ตารางเรียนแต่ละครั้งและสถานะ `confirmed` / `unconfirmed`
-- `enrollment_schedule_notes`: note ตารางรายนักเรียนที่ยังไม่ใช่วันเวลาชัดเจน เช่น `ใส่วันที่`, `รอ CF`
-- `line_groups`: LINE group ที่ bot เคยเห็น เพื่อส่ง routine notification ทุก group
+- `Overview`: master enrollment/student จาก `Class schedule - Overview.csv`
+- `ตารางเรียน`: grid ตารางหลายสัปดาห์จาก `Class schedule - ตารางเรียน.csv`
+- `สัปดาห์นี้`: session รายครั้งจาก `Class schedule - สัปดาห์นี้.csv`
 
-ความสัมพันธ์:
+การอ่าน/เขียนของ bot:
 
-```text
-students 1 -- * enrollments * -- 1 courses
-courses 1 -- * course_default_schedules
-enrollments 1 -- * enrollment_default_schedules
-enrollments 1 -- * lesson_sessions
-enrollments 1 -- * enrollment_schedule_notes
-line_groups แยกสำหรับปลายทางแจ้งเตือน
-```
+- `/ตารางเรียน` อ่านจาก `สัปดาห์นี้`
+- `/ข้อมูลนักเรียน` อ่านจาก `Overview` แล้วแสดงชื่อเล่น, ชื่อจริง, คอร์ส ของนักเรียนที่ยังเรียนไม่จบ
+- `/อัพเดท` เขียนวันที่, วัน, เวลา, ระยะเวลา กลับ `สัปดาห์นี้`
+- `/คอนเฟิร์ม`, `/ไม่คอนเฟิร์ม` เขียน `true`/`false` ที่ช่อง `สถานะคอนเฟิร์ม` ใน `สัปดาห์นี้`
 
-Seed ปัจจุบันสร้างจากไฟล์ `Class schedule - Overview.csv`, `Class schedule - ตารางเรียน.csv`, และ `Class schedule - สัปดาห์นี้.csv`
+ถ้า LINE response ยาวเกิน limit ระบบจะแบ่งข้อความส่งให้อัตโนมัติ
 
 ## คำสั่งใน LINE Group
 
@@ -152,11 +136,10 @@ Seed ปัจจุบันสร้างจากไฟล์ `Class schedul
 /ตารางเรียน
 ```
 
-ดูข้อมูลตารางรายนักเรียน:
+ดูรายชื่อนักเรียนที่ยังเรียนไม่จบ:
 
 ```text
 /ข้อมูลนักเรียน
-/ข้อมูลนักเรียน แพรว แพรวา
 ```
 
 อัพเดทเวลาเรียน:
@@ -164,13 +147,6 @@ Seed ปัจจุบันสร้างจากไฟล์ `Class schedul
 ```text
 /อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ
 /อัพเดท แพรว แพรวา 9/5 13:00-15:00
-```
-
-เพิ่มนักเรียน:
-
-```text
-/เพิ่มนักเรียน ชื่อเล่น ชื่อจริง/คอร์ส/ชั่วโมงรวม
-/เพิ่มนักเรียน แพรว แพรวา/Little 3D รุ่นที่ 1/8
 ```
 
 คอนเฟิร์ม:
