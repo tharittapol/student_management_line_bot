@@ -116,9 +116,16 @@ func loadGoogleServiceAccountJSON() ([]byte, error) {
 		return []byte(raw), nil
 	}
 	if raw := strings.TrimSpace(os.Getenv("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64")); raw != "" {
+		raw = normalizeGoogleServiceAccountBase64(raw)
+		if strings.HasPrefix(raw, "{") {
+			return []byte(raw), nil
+		}
 		data, err := base64.StdEncoding.DecodeString(raw)
 		if err != nil {
-			return nil, fmt.Errorf("decode GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: %w", err)
+			data, err = base64.RawStdEncoding.DecodeString(raw)
+			if err != nil {
+				return nil, fmt.Errorf("decode GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: %w", err)
+			}
 		}
 		return data, nil
 	}
@@ -131,6 +138,19 @@ func loadGoogleServiceAccountJSON() ([]byte, error) {
 		return nil, fmt.Errorf("read Google service account JSON: %w", err)
 	}
 	return data, nil
+}
+
+func normalizeGoogleServiceAccountBase64(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, `"'`)
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\r', '\t':
+			return -1
+		default:
+			return r
+		}
+	}, value)
 }
 
 func parseRSAPrivateKey(value string) (*rsa.PrivateKey, error) {
