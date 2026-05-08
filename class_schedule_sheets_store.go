@@ -250,6 +250,30 @@ func (s *ClassScheduleSheetsLessonStore) UnconfirmLesson(nickname, firstName, sc
 	return s.changeLesson(nickname, firstName, scheduleText, false, false)
 }
 
+func (s *ClassScheduleSheetsLessonStore) UpdateLearningStatus(nickname, firstName, status string) (StudentLesson, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	ctx := context.Background()
+	weekly, err := s.loadWeekly(ctx)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	record, err := findEditableWeeklyRecord(weekly, nickname, firstName, s.loc)
+	if err != nil {
+		return StudentLesson{}, err
+	}
+	start, end, ok := weeklyRecordTime(record, s.loc)
+	if !ok {
+		return StudentLesson{}, errors.New("อ่านวันเวลาในตารางสัปดาห์นี้ไม่ได้")
+	}
+	record.LearningStatus = cleanClassText(status)
+	if err := s.updateWeeklyRecord(ctx, record); err != nil {
+		return StudentLesson{}, err
+	}
+	return record.toStudentLesson(start, end, s.loc), nil
+}
+
 func (s *ClassScheduleSheetsLessonStore) FindLessonByStudentName(nickname, firstName string) (StudentLesson, error) {
 	weekly, err := s.loadWeekly(context.Background())
 	if err != nil {
@@ -414,8 +438,14 @@ func (s *ClassScheduleSheetsLessonStore) loadWeekly(ctx context.Context) ([]week
 }
 
 func (s *ClassScheduleSheetsLessonStore) updateWeeklyRecord(ctx context.Context, record weeklyRecord) error {
-	row := record.toSheetRow()
-	return s.client.valuesUpdate(ctx, fmt.Sprintf("%s!A%d:U%d", quoteSheetName(classWeeklySheet), record.rowNumber, record.rowNumber), [][]string{row})
+	if err := s.copyWeeklyRowPattern(ctx, record.rowNumber); err != nil {
+		return err
+	}
+	row := record.toSheetRowValues()
+	if err := s.client.valuesUpdateAny(ctx, fmt.Sprintf("%s!A%d:U%d", quoteSheetName(classWeeklySheet), record.rowNumber, record.rowNumber), [][]any{row}); err != nil {
+		return err
+	}
+	return s.copyWeeklyRowPattern(ctx, record.rowNumber)
 }
 
 func (s *ClassScheduleSheetsLessonStore) appendWeeklyLesson(ctx context.Context, base overviewRecord, start, end time.Time, confirmed bool) error {
@@ -436,11 +466,18 @@ func (s *ClassScheduleSheetsLessonStore) appendWeeklyLesson(ctx context.Context,
 		Confirmed:      confirmed,
 		LearningStatus: "เข้าเรียนปกติ",
 	}
-	return s.client.valuesAppend(ctx, quoteSheetName(classWeeklySheet)+"!A1", [][]string{record.toSheetRow()})
+	updatedRange, err := s.client.valuesAppendAny(ctx, quoteSheetName(classWeeklySheet)+"!A1", [][]any{record.toSheetRowValues()})
+	if err != nil {
+		return err
+	}
+	if rowNumber := rowNumberFromUpdatedRange(updatedRange); rowNumber > 0 {
+		return s.copyWeeklyRowPattern(ctx, rowNumber)
+	}
+	return nil
 }
 
-func (r weeklyRecord) toSheetRow() []string {
-	row := []string{
+func (r weeklyRecord) toSheetRowValues() []any {
+	row := []any{
 		r.DateText,
 		r.DayText,
 		r.TimeText,
@@ -454,14 +491,37 @@ func (r weeklyRecord) toSheetRow() []string {
 		r.ParentPhone,
 		strconv.Itoa(r.TotalHours),
 		strconv.Itoa(r.CompletedHours),
-		strconv.FormatBool(r.Confirmed),
+		r.Confirmed,
 		r.LearningStatus,
 	}
-	row = append(row, r.AvailableSlots...)
+	for _, slot := range r.AvailableSlots {
+		row = append(row, slot)
+	}
 	for len(row) < 21 {
 		row = append(row, "")
 	}
 	return row[:21]
+}
+
+func (s *ClassScheduleSheetsLessonStore) copyWeeklyRowPattern(ctx context.Context, targetRow int) error {
+	if targetRow <= 3 {
+		return s.copyWeeklyRowPatternFrom(ctx, targetRow+1, targetRow)
+	}
+	return s.copyWeeklyRowPatternFrom(ctx, targetRow-1, targetRow)
+}
+
+func (s *ClassScheduleSheetsLessonStore) copyWeeklyRowPatternFrom(ctx context.Context, sourceRow int, targetRow int) error {
+	if sourceRow <= 2 || targetRow <= 2 || sourceRow == targetRow {
+		return nil
+	}
+	rows, err := s.client.valuesGet(ctx, quoteSheetName(classWeeklySheet)+"!A:A")
+	if err != nil {
+		return err
+	}
+	if sourceRow > len(rows) {
+		return nil
+	}
+	return s.client.copyPasteRow(ctx, classWeeklySheet, sourceRow, targetRow, 0, 21, "PASTE_FORMAT", "PASTE_DATA_VALIDATION")
 }
 
 func (r weeklyRecord) toStudentLesson(start, end time.Time, loc *time.Location) StudentLesson {
@@ -732,4 +792,26 @@ func valueAt(row []string, index int) string {
 		return ""
 	}
 	return row[index]
+}
+
+func rowNumberFromUpdatedRange(updatedRange string) int {
+	value := strings.TrimSpace(updatedRange)
+	if value == "" {
+		return 0
+	}
+	if bangIndex := strings.LastIndex(value, "!"); bangIndex >= 0 {
+		value = value[bangIndex+1:]
+	}
+	if colonIndex := strings.Index(value, ":"); colonIndex >= 0 {
+		value = value[:colonIndex]
+	}
+	var digits strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		} else if digits.Len() > 0 {
+			break
+		}
+	}
+	return parseClassInt(digits.String(), 0)
 }

@@ -264,6 +264,7 @@ type LessonStore interface {
 	UpdateLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
 	ConfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
 	UnconfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error)
+	UpdateLearningStatus(nickname, firstName, status string) (StudentLesson, error)
 	FindLessonByStudentName(nickname, firstName string) (StudentLesson, error)
 	RegisterLineGroup(groupID string) error
 	ListLineGroupIDs() ([]string, error)
@@ -540,6 +541,20 @@ func (s *MockLessonStore) UnconfirmLesson(nickname, firstName, scheduleText stri
 		lesson = applySchedule(lesson, scheduleText, s.loc)
 	}
 	lesson.Confirmed = false
+	lesson.UpdatedAt = time.Now().In(s.loc)
+	s.lessons[key] = lesson
+	return lesson, nil
+}
+
+func (s *MockLessonStore) UpdateLearningStatus(nickname, firstName, status string) (StudentLesson, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := studentNameKey(nickname, firstName)
+	lesson, ok := s.lessons[key]
+	if !ok {
+		return StudentLesson{}, fmt.Errorf("ไม่พบนักเรียนใน mock database: %s / %s", nickname, firstName)
+	}
 	lesson.UpdatedAt = time.Now().In(s.loc)
 	s.lessons[key] = lesson
 	return lesson, nil
@@ -935,6 +950,10 @@ func (s *PostgresLessonStore) UnconfirmLesson(nickname, firstName, scheduleText 
 	return s.changeLesson(nickname, firstName, scheduleText, "unconfirmed", false)
 }
 
+func (s *PostgresLessonStore) UpdateLearningStatus(nickname, firstName, status string) (StudentLesson, error) {
+	return s.FindLessonByStudentName(nickname, firstName)
+}
+
 func (s *PostgresLessonStore) FindLessonByStudentName(nickname, firstName string) (StudentLesson, error) {
 	enrollmentID, err := s.findEnrollmentID(nickname, firstName)
 	if err != nil {
@@ -1315,6 +1334,18 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 			return "", true, err
 		}
 		return formatUnconfirmNotification(lesson), true, nil
+	case "leave":
+		lesson, err := store.UpdateLearningStatus(command.Nickname, command.FirstName, "ลา")
+		if err != nil {
+			return "", true, err
+		}
+		return formatLearningStatusNotification(lesson, "ลา"), true, nil
+	case "attend":
+		lesson, err := store.UpdateLearningStatus(command.Nickname, command.FirstName, "เข้าเรียนปกติ")
+		if err != nil {
+			return "", true, err
+		}
+		return formatLearningStatusNotification(lesson, "เข้าเรียนปกติ"), true, nil
 	default:
 		return "", false, nil
 	}
@@ -1423,6 +1454,10 @@ func normalizeAction(action string) string {
 	switch {
 	case strings.Contains(action, "ไม่คอนเฟ") || strings.Contains(action, "unconfirm") || strings.Contains(action, "notconfirm"):
 		return "unconfirm"
+	case action == "ลา" || strings.Contains(action, "leave") || strings.Contains(action, "absent"):
+		return "leave"
+	case strings.Contains(action, "เข้าเรียน") || strings.Contains(action, "attend") || strings.Contains(action, "present"):
+		return "attend"
 	case strings.Contains(action, "อัพ") || strings.Contains(action, "อัป") || strings.Contains(action, "update") || strings.Contains(action, "เลื่อน"):
 		return "update"
 	case strings.Contains(action, "คอนเฟ") || strings.Contains(action, "confirm") || strings.Contains(action, "ยืนยัน"):
@@ -1468,6 +1503,8 @@ func commandHelpText() string {
 		"/อัพเดท แพรว แพรวา 9/5 13:00-15:00",
 		"/คอนเฟิร์ม แพรว แพรวา",
 		"/ไม่คอนเฟิร์ม แพรว แพรวา",
+		"/ลา แพรว แพรวา",
+		"/เข้าเรียน แพรว แพรวา",
 		"/คอนเฟิร์ม แพรว แพรวา 9/5/2570 13:00-15:00",
 	}, "\n")
 }
@@ -1687,13 +1724,54 @@ func formatStudentScheduleSummaries(summaries []StudentScheduleSummary) string {
 		return "ยังไม่มีนักเรียนที่กำลังเรียนอยู่"
 	}
 
+	studentGroups := groupStudentScheduleSummaries(summaries)
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("👥 นักเรียนที่ยังเรียนไม่จบ (%d รายการ)", len(summaries)))
-	for i, summary := range summaries {
+	b.WriteString(fmt.Sprintf("👥 นักเรียนที่ยังเรียนไม่จบ (%d คน)", len(studentGroups)))
+	for i, summary := range studentGroups {
 		b.WriteString("\n")
 		b.WriteString(formatStudentListLine(i+1, summary))
 	}
 	return b.String()
+}
+
+func groupStudentScheduleSummaries(summaries []StudentScheduleSummary) []StudentScheduleSummary {
+	sort.Slice(summaries, func(i, j int) bool {
+		if cleanClassText(summaries[i].Nickname) != cleanClassText(summaries[j].Nickname) {
+			return cleanClassText(summaries[i].Nickname) < cleanClassText(summaries[j].Nickname)
+		}
+		if cleanClassText(summaries[i].FirstName) != cleanClassText(summaries[j].FirstName) {
+			return cleanClassText(summaries[i].FirstName) < cleanClassText(summaries[j].FirstName)
+		}
+		return cleanClassText(summaries[i].Course) < cleanClassText(summaries[j].Course)
+	})
+
+	var grouped []StudentScheduleSummary
+	groupIndexByKey := map[string]int{}
+	courseSeenByKey := map[string]map[string]bool{}
+	for _, summary := range summaries {
+		key := strings.ToLower(cleanClassText(summary.Nickname)) + "\x00" + strings.ToLower(cleanClassText(summary.FirstName))
+		if key == "\x00" {
+			key = strings.ToLower(cleanClassText(summary.FullName))
+		}
+		index, ok := groupIndexByKey[key]
+		if !ok {
+			groupIndexByKey[key] = len(grouped)
+			courseSeenByKey[key] = map[string]bool{}
+			grouped = append(grouped, summary)
+			index = len(grouped) - 1
+			grouped[index].Course = ""
+		}
+		course := cleanClassText(summary.Course)
+		if course != "" && !courseSeenByKey[key][course] {
+			if grouped[index].Course == "" {
+				grouped[index].Course = course
+			} else {
+				grouped[index].Course += ", " + course
+			}
+			courseSeenByKey[key][course] = true
+		}
+	}
+	return grouped
 }
 
 func formatStudentListLine(index int, summary StudentScheduleSummary) string {
@@ -1724,6 +1802,10 @@ func formatConfirmNotification(lesson StudentLesson) string {
 
 func formatUnconfirmNotification(lesson StudentLesson) string {
 	return "⏳ ไม่คอนเฟิร์มเวลาเรียน\n" + formatCompactLessonLine(lesson)
+}
+
+func formatLearningStatusNotification(lesson StudentLesson, status string) string {
+	return "📝 อัพเดทสถานะการเรียน: " + status + "\n" + formatCompactLessonLine(lesson)
 }
 
 func confirmEmoji(lesson StudentLesson) string {

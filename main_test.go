@@ -99,6 +99,33 @@ func TestProcessUnconfirmCommand(t *testing.T) {
 	}
 }
 
+func TestProcessLearningStatusCommands(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/ลา แพรว แพรวา", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected leave command to be handled")
+	}
+	if !strings.Contains(response, "อัพเดทสถานะการเรียน: ลา") {
+		t.Fatalf("expected leave status response, got %q", response)
+	}
+
+	response, handled, err = processStaffCommand("/เข้าเรียน แพรว แพรวา", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected attend command to be handled")
+	}
+	if !strings.Contains(response, "อัพเดทสถานะการเรียน: เข้าเรียนปกติ") {
+		t.Fatalf("expected attend status response, got %q", response)
+	}
+}
+
 func TestAddStudentCommandIsRemoved(t *testing.T) {
 	loc := testLocation(t)
 	store := NewMockLessonStore(loc)
@@ -242,6 +269,24 @@ func TestProcessStudentScheduleRequestCommand(t *testing.T) {
 	}
 	if strings.Contains(response, "เรียนแล้ว:") || strings.Contains(response, "ถัดไป:") || strings.Contains(response, "ปกติ:") {
 		t.Fatalf("expected individual student details to be removed, got %q", response)
+	}
+}
+
+func TestFormatStudentScheduleSummariesGroupsSameStudent(t *testing.T) {
+	message := formatStudentScheduleSummaries([]StudentScheduleSummary{
+		{Nickname: "แพรว", FirstName: "แพรวา", Course: "Little 3D"},
+		{Nickname: "แพรว", FirstName: "แพรวา", Course: "Robotics"},
+		{Nickname: "บอส", FirstName: "ธนากร", Course: "Programming"},
+	})
+
+	if !strings.Contains(message, "ยังเรียนไม่จบ (2 คน)") {
+		t.Fatalf("expected grouped student count, got %q", message)
+	}
+	if strings.Count(message, "แพรว - แพรวา") != 1 {
+		t.Fatalf("expected same student to appear once, got %q", message)
+	}
+	if !strings.Contains(message, "Little 3D, Robotics") {
+		t.Fatalf("expected courses to be grouped on one line, got %q", message)
 	}
 }
 

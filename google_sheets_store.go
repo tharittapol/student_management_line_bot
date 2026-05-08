@@ -298,6 +298,26 @@ func (c *GoogleSheetsClient) spreadsheetTitles(ctx context.Context) (map[string]
 	return titles, nil
 }
 
+func (c *GoogleSheetsClient) spreadsheetSheetIDs(ctx context.Context) (map[string]int64, error) {
+	var out struct {
+		Sheets []struct {
+			Properties struct {
+				SheetID int64  `json:"sheetId"`
+				Title   string `json:"title"`
+			} `json:"properties"`
+		} `json:"sheets"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, c.spreadsheetURL("?fields=sheets.properties(sheetId,title)"), nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]int64{}
+	for _, sheet := range out.Sheets {
+		ids[sheet.Properties.Title] = sheet.Properties.SheetID
+	}
+	return ids, nil
+}
+
 func (c *GoogleSheetsClient) addSheet(ctx context.Context, title string) error {
 	payload := map[string]any{
 		"requests": []map[string]any{
@@ -309,6 +329,52 @@ func (c *GoogleSheetsClient) addSheet(ctx context.Context, title string) error {
 		},
 	}
 	return c.doJSON(ctx, http.MethodPost, c.spreadsheetURL(":batchUpdate"), payload, nil)
+}
+
+func (c *GoogleSheetsClient) copyPasteRow(ctx context.Context, sheetTitle string, sourceRow int, targetRow int, startColumn int, endColumn int, pasteTypes ...string) error {
+	if sourceRow <= 0 || targetRow <= 0 || sourceRow == targetRow {
+		return nil
+	}
+	if startColumn < 0 {
+		startColumn = 0
+	}
+	if endColumn <= startColumn {
+		return nil
+	}
+	ids, err := c.spreadsheetSheetIDs(ctx)
+	if err != nil {
+		return err
+	}
+	sheetID, ok := ids[sheetTitle]
+	if !ok {
+		return fmt.Errorf("missing Google Sheet tab %q", sheetTitle)
+	}
+	if len(pasteTypes) == 0 {
+		pasteTypes = []string{"PASTE_FORMAT", "PASTE_DATA_VALIDATION"}
+	}
+	requests := make([]map[string]any, 0, len(pasteTypes))
+	for _, pasteType := range pasteTypes {
+		requests = append(requests, map[string]any{
+			"copyPaste": map[string]any{
+				"source": map[string]any{
+					"sheetId":          sheetID,
+					"startRowIndex":    sourceRow - 1,
+					"endRowIndex":      sourceRow,
+					"startColumnIndex": startColumn,
+					"endColumnIndex":   endColumn,
+				},
+				"destination": map[string]any{
+					"sheetId":          sheetID,
+					"startRowIndex":    targetRow - 1,
+					"endRowIndex":      targetRow,
+					"startColumnIndex": startColumn,
+					"endColumnIndex":   endColumn,
+				},
+				"pasteType": pasteType,
+			},
+		})
+	}
+	return c.doJSON(ctx, http.MethodPost, c.spreadsheetURL(":batchUpdate"), map[string]any{"requests": requests}, nil)
 }
 
 func (c *GoogleSheetsClient) valuesGet(ctx context.Context, rangeName string) ([][]string, error) {
@@ -326,6 +392,12 @@ func (c *GoogleSheetsClient) valuesUpdate(ctx context.Context, rangeName string,
 	return c.doJSON(ctx, http.MethodPut, apiURL, payload, nil)
 }
 
+func (c *GoogleSheetsClient) valuesUpdateAny(ctx context.Context, rangeName string, values [][]any) error {
+	payload := map[string]any{"majorDimension": "ROWS", "values": values}
+	apiURL := c.spreadsheetURL("/values/" + url.PathEscape(rangeName) + "?valueInputOption=RAW")
+	return c.doJSON(ctx, http.MethodPut, apiURL, payload, nil)
+}
+
 func (c *GoogleSheetsClient) valuesAppend(ctx context.Context, rangeName string, values [][]string) error {
 	if len(values) == 0 {
 		return nil
@@ -333,6 +405,23 @@ func (c *GoogleSheetsClient) valuesAppend(ctx context.Context, rangeName string,
 	payload := map[string]any{"majorDimension": "ROWS", "values": values}
 	apiURL := c.spreadsheetURL("/values/" + url.PathEscape(rangeName) + ":append?valueInputOption=RAW&insertDataOption=INSERT_ROWS")
 	return c.doJSON(ctx, http.MethodPost, apiURL, payload, nil)
+}
+
+func (c *GoogleSheetsClient) valuesAppendAny(ctx context.Context, rangeName string, values [][]any) (string, error) {
+	if len(values) == 0 {
+		return "", nil
+	}
+	var out struct {
+		Updates struct {
+			UpdatedRange string `json:"updatedRange"`
+		} `json:"updates"`
+	}
+	payload := map[string]any{"majorDimension": "ROWS", "values": values}
+	apiURL := c.spreadsheetURL("/values/" + url.PathEscape(rangeName) + ":append?valueInputOption=RAW&insertDataOption=INSERT_ROWS")
+	if err := c.doJSON(ctx, http.MethodPost, apiURL, payload, &out); err != nil {
+		return "", err
+	}
+	return out.Updates.UpdatedRange, nil
 }
 
 type sheetRecord struct {
@@ -646,6 +735,10 @@ func (s *GoogleSheetsLessonStore) ConfirmLesson(nickname, firstName, scheduleTex
 
 func (s *GoogleSheetsLessonStore) UnconfirmLesson(nickname, firstName, scheduleText string) (StudentLesson, error) {
 	return s.changeLesson(nickname, firstName, scheduleText, "unconfirmed", false)
+}
+
+func (s *GoogleSheetsLessonStore) UpdateLearningStatus(nickname, firstName, status string) (StudentLesson, error) {
+	return s.FindLessonByStudentName(nickname, firstName)
 }
 
 func (s *GoogleSheetsLessonStore) FindLessonByStudentName(nickname, firstName string) (StudentLesson, error) {
