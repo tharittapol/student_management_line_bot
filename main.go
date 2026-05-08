@@ -1287,6 +1287,9 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location) (st
 	if normalized == "" {
 		return "", false, nil
 	}
+	if !strings.Contains(normalized, "/") {
+		return "", false, nil
+	}
 
 	if isHelpCommand(normalized) {
 		return commandHelpText(), true, nil
@@ -1316,7 +1319,7 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 	switch command.Action {
 	case "update":
 		if command.ScheduleText == "" {
-			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น ชื่อจริง วันที่ เวลา เช่น /อัพเดท แพรว แพรวา 9/5 13:00-15:00")
+			return "", true, errors.New("คำสั่งอัพเดทต้องเป็น: /อัพเดท ชื่อเล่น ชื่อจริง วันที่ เวลา เช่น /อัพเดท โบ โบรอท 9/5 13:00-15:00")
 		}
 		lesson, err := store.UpdateLesson(command.Nickname, command.FirstName, command.ScheduleText)
 		if err != nil {
@@ -1389,7 +1392,7 @@ func parseCompactSlashCommand(text string) (compactSlashCommand, error) {
 
 	fields := strings.Fields(body)
 	if len(fields) < 2 {
-		return compactSlashCommand{}, errors.New("กรุณาระบุเป็น ชื่อเล่น ชื่อจริง เช่น /คอนเฟิร์ม แพรว แพรวา")
+		return compactSlashCommand{}, errors.New("กรุณาระบุเป็น ชื่อเล่น ชื่อจริง เช่น /คอนเฟิร์ม โบ โบรอท")
 	}
 
 	nickname := fields[0]
@@ -1473,13 +1476,10 @@ func normalizeAction(action string) string {
 func isHelpCommand(text string) bool {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = strings.ReplaceAll(text, " ", "")
-	return text == "help" ||
-		text == "/help" ||
+	return text == "/help" ||
 		text == "/วิธีใช้" ||
-		text == "วิธีใช้" ||
 		text == "/วิธีใช้งาน" ||
-		text == "วิธีใช้งาน" ||
-		text == "ตัวอย่างคำสั่ง"
+		text == "/ตัวอย่างคำสั่ง"
 }
 
 func isScheduleRequestCommand(text string) bool {
@@ -1506,14 +1506,42 @@ func isConfirmWord(text string) bool {
 
 func commandHelpText() string {
 	return strings.Join([]string{
-		"วิธีใช้งาน",
-		"/ตารางเรียน - ดูตารางในแท็บสัปดาห์นี้",
-		"/ข้อมูลนักเรียน - ดูนักเรียนที่ยังเรียนไม่จบ",
-		"/อัพเดท ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"📌 คำสั่งใน LINE Group",
+		"",
+		"🧭 วิธีใช้งาน",
+		"/วิธีใช้งาน",
+		"",
+		"📚 ตารางเรียนจากแท็บสัปดาห์นี้",
+		"/ตารางเรียน",
+		"",
+		"👥 นักเรียนที่ยังเรียนไม่จบ (\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้)",
+		"/ข้อมูลนักเรียน",
+		"",
+		"🔄 อัพเดทเวลาเรียน",
+		"/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
+		"ตัวอย่าง: \"/อัพเดท โบ โบรอท 9/5 13:00-15:00\"",
+		"",
+		"✅ คอนเฟิร์ม",
 		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"ตัวอย่าง: \"/คอนเฟิร์ม โบ โบรอท\"",
+		"",
+		"⏳ ไม่คอนเฟิร์ม",
 		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"ตัวอย่าง: \"/ไม่คอนเฟิร์ม โบ โบรอท\"",
+		"",
+		"📝 สถานะการเรียน",
 		"/ลา ชื่อเล่น ชื่อจริง",
 		"/เข้าเรียน ชื่อเล่น ชื่อจริง",
+		"",
+		"🗓 คอนเฟิร์มหรือไม่คอนเฟิร์มพร้อมเปลี่ยนเวลา",
+		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"",
+		"📅 กติกาปี",
+		"- ใส่แค่ วัน/เดือน เช่น 9/5 = ปีปัจจุบัน",
+		"- ใส่ปีด้วย เช่น 9/5/2570 = ใช้ปีที่ระบุ",
+		"",
+		"⏰ ระบบแจ้งตารางเรียนจากแท็บสัปดาห์นี้ทุกวัน 09:00 เวลา Asia/Bangkok",
 	}, "\n")
 }
 

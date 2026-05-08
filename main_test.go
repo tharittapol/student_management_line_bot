@@ -267,8 +267,42 @@ func TestHelpCommandThaiUsage(t *testing.T) {
 	if !handled {
 		t.Fatal("expected Thai usage command to be handled")
 	}
-	if !strings.Contains(response, "วิธีใช้งาน") || !strings.Contains(response, "/ตารางเรียน -") {
-		t.Fatalf("expected concise usage text, got %q", response)
+	expectedParts := []string{
+		"📌 คำสั่งใน LINE Group",
+		"/วิธีใช้งาน",
+		"/ตารางเรียน",
+		"\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้",
+		"/ข้อมูลนักเรียน",
+		"/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
+		"ตัวอย่าง: \"/อัพเดท โบ โบรอท 9/5 13:00-15:00\"",
+		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"ตัวอย่าง: \"/คอนเฟิร์ม โบ โบรอท\"",
+		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
+		"ตัวอย่าง: \"/ไม่คอนเฟิร์ม โบ โบรอท\"",
+		"/ลา ชื่อเล่น ชื่อจริง",
+		"/เข้าเรียน ชื่อเล่น ชื่อจริง",
+		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"ระบบแจ้งตารางเรียนจากแท็บสัปดาห์นี้ทุกวัน 09:00",
+	}
+	for _, part := range expectedParts {
+		if !strings.Contains(response, part) {
+			t.Fatalf("expected usage text to contain %q, got %q", part, response)
+		}
+	}
+}
+
+func TestCommandsWithoutSlashAreIgnored(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	for _, text := range []string{"วิธีใช้งาน", "ตารางเรียน", "ข้อมูลนักเรียน", "คอนเฟิร์ม แพรว แพรวา"} {
+		response, handled, err := processStaffCommand(text, store, loc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if handled {
+			t.Fatalf("expected command without slash to be ignored: %q response=%q", text, response)
+		}
 	}
 }
 
