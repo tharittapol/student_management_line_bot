@@ -1725,11 +1725,50 @@ func formatWeeklyLessons(lessons []StudentLesson, now time.Time) string {
 		return b.String()
 	}
 
+	var currentDay time.Time
+	hasCurrentDay := false
+	lessonNumber := 0
 	for _, lesson := range weeklyLessons {
-		b.WriteString("\n\n")
-		b.WriteString(formatCompactLessonLine(lesson))
+		lessonDay := dateOnly(lesson.NextStart)
+		isNewDay := !hasCurrentDay || !sameLessonDay(currentDay, lessonDay)
+		if isNewDay {
+			currentDay = lessonDay
+			hasCurrentDay = true
+			b.WriteString("\n\n")
+			b.WriteString(formatLessonDayHeader(lesson.NextStart))
+		}
+
+		lessonNumber++
+		if isNewDay {
+			b.WriteString("\n")
+		} else {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(formatNumberedCompactLessonLine(lessonNumber, lesson))
 	}
 	return b.String()
+}
+
+func dateOnly(t time.Time) time.Time {
+	if t.IsZero() {
+		return t
+	}
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+func sameLessonDay(a, b time.Time) bool {
+	if a.IsZero() || b.IsZero() {
+		return a.IsZero() && b.IsZero()
+	}
+	b = b.In(a.Location())
+	return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
+}
+
+func formatLessonDayHeader(t time.Time) string {
+	if t.IsZero() {
+		return "📅 ไม่ระบุวันเรียน"
+	}
+	return fmt.Sprintf("📅 วัน%s %d %s %d", thaiWeekdays[t.Weekday()], t.Day(), thaiShortMonths[t.Month()-1], t.Year()+543)
 }
 
 func lessonDateRangeText(lessons []StudentLesson) string {
@@ -1749,6 +1788,10 @@ func lessonDateRangeText(lessons []StudentLesson) string {
 
 func formatCompactLessonLine(lesson StudentLesson) string {
 	return formatCompactLessonLineWithYear(lesson, false)
+}
+
+func formatNumberedCompactLessonLine(index int, lesson StudentLesson) string {
+	return fmt.Sprintf("%d. %s", index, formatCompactLessonLine(lesson))
 }
 
 func formatCompactLessonLineWithYear(lesson StudentLesson, showYear bool) string {

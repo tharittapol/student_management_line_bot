@@ -422,7 +422,9 @@ Cloud Run จะสร้าง revision ใหม่อัตโนมัติ
 ```powershell
 go test .
 
-$IMAGE = "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
+$SHORT_SHA = git rev-parse --short HEAD
+$IMAGE = "$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/${SERVICE}:$SHORT_SHA"
+
 gcloud builds submit --tag $IMAGE
 
 gcloud run deploy $SERVICE `
