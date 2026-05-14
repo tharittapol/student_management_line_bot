@@ -220,7 +220,6 @@ PROJECT_ID="your-gcp-project-id"
 REGION="asia-southeast1"
 SERVICE="student-management-line-bot"
 REPO="line-bot"
-IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
 
 gcloud auth login
 gcloud config set project $PROJECT_ID
@@ -280,6 +279,7 @@ cat service-account.json | base64
 ### 5. Build image
 
 ```bash
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
 gcloud builds submit --tag $IMAGE
 ```
 
@@ -398,8 +398,7 @@ Cloud Run จะสร้าง revision ใหม่อัตโนมัติ
 ```bash
 go test ./...
 
-SHORT_SHA=$(git rev-parse --short HEAD)
-IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$SHORT_SHA"
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:$(git rev-parse --short HEAD)"
 
 gcloud builds submit --tag $IMAGE
 
