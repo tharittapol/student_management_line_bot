@@ -7,7 +7,7 @@ LINE Bot backend for Thai student lesson scheduling. Written in Go 1.22, deploye
 ## Repository Layout
 
 ```
-main.go                          # All HTTP handlers, LINE webhook logic, command parsing, scheduling (2430 lines)
+main.go                          # All HTTP handlers, LINE webhook logic, command parsing, scheduling (~2630 lines)
 class_schedule_sheets_store.go   # Primary storage backend — reads/writes the 3-tab Google Sheet
 google_sheets_store.go           # Alternative normalized-schema Sheets store (rarely used in prod)
 main_test.go                     # Unit tests with MockLessonStore
@@ -85,9 +85,10 @@ All commands require a `/` prefix and must come from a group listed in `LINE_GRO
 
 | Command | Response |
 |---------|----------|
-| `/ตารางเรียน` | Current week's schedule from `สัปดาห์นี้`, grouped by Thai weekday |
-| `/ข้อมูลนักเรียน` | Active students from `Overview`, deduplicated by person |
-| `/วิธีใช้งาน` or `/help` | Full Thai usage guide |
+| `/ตารางเรียน` | Current week's schedule from `สัปดาห์นี้`, grouped by Thai weekday, includes parent phone |
+| `/ตารางเวลา` | Hourly slot view (10:00–17:00) showing which students fill each slot or "ว่าง" |
+| `/ข้อมูลนักเรียน` | Active students from `Overview`, deduplicated by person, includes parent name and phone |
+| `/วิธีใช้งาน` or `/help` | Thai usage guide |
 | `/groupid` or `/group-id` | Current LINE group ID |
 
 ### Write commands
@@ -97,10 +98,12 @@ All write commands follow the pattern: `/action nickname firstname [date time_ra
 | Command aliases | Required args | Optional | Action |
 |-----------------|--------------|---------|--------|
 | `/อัพเดท` `/อัปเดท` `/update` `/เลื่อน` | nickname firstname | date time | Change lesson date/time |
-| `/คอนเฟิร์ม` `/confirm` `/ยืนยัน` | nickname firstname | date time | Set confirmed = TRUE |
-| `/ไม่คอนเฟิร์ม` `/not-confirm` `/unconfirm` | nickname firstname | date time | Set confirmed = FALSE |
+| `/คอนเฟิร์ม` `/confirm` `/ยืนยัน` | nickname firstname **or** index list | date time | Set confirmed = TRUE |
+| `/ไม่คอนเฟิร์ม` `/not-confirm` `/unconfirm` | nickname firstname **or** index list | date time | Set confirmed = FALSE |
 | `/ลา` `/leave` `/absent` | nickname firstname | — | Set learning status to `ลา` |
 | `/เข้าเรียน` `/attend` `/present` | nickname firstname | — | Set learning status to `เข้าเรียนปกติ` |
+
+**Bulk confirm by index** — `/คอนเฟิร์ม 1,2,5` confirms lessons at positions 1, 2, 5 from the `/ตารางเรียน` numbered list (sorted by `NextStart`). The same form works for `/ไม่คอนเฟิร์ม`.
 
 **Accepted date/time formats:**
 
@@ -113,9 +116,9 @@ All write commands follow the pattern: `/action nickname firstname [date time_ra
 
 ### Adding a new command
 
-1. Add the command string(s) to the action normalization block in `processStaffCommand()` in `main.go`.
-2. Implement the handler logic (look up student by nickname+firstname, call the appropriate store method, compose a Thai response string).
-3. Add the command to the `/วิธีใช้งาน` (help) text.
+1. Add the command string(s) to the action normalization block in `normalizeAction()` in `main.go`.
+2. Handle it in `processStaffCommand()` (read-only) or `processCompactSlashCommand()` (write).
+3. Add the command to `commandHelpText()`.
 4. Add test cases in `main_test.go` using `MockLessonStore`.
 
 ---
@@ -147,6 +150,7 @@ type StudentLesson struct {
     ScheduleText   string
     Confirmed      bool
     LearningStatus string        // "เข้าเรียนปกติ" | "ลา" | ""
+    ParentPhone    string        // shown in /ตารางเรียน output
     UpdatedAt      time.Time
 }
 
@@ -162,8 +166,19 @@ type StudentScheduleSummary struct {
     PastLessons     string
     NextLessons     string
     ScheduleNotes   string
+    ParentName      string        // shown in /ข้อมูลนักเรียน output
+    ParentPhone     string        // shown in /ข้อมูลนักเรียน output
 }
 ```
+
+---
+
+## Message Formatting Notes
+
+- **`/ตารางเรียน`** — lessons numbered sequentially sorted by `NextStart`. Hours label uses comma format: `ชม.7,8` (not `ชม.7-8`). Phone appended as `📞 xxx` when available.
+- **`/ตารางเวลา`** — 7 slots per day (10-11 … 16-17). A lesson occupies slot `[h, h+1)` if its time range overlaps. Shows student nicknames or "ว่าง".
+- **`/ข้อมูลนักเรียน`** — parent info shown as `👨‍👩‍👧 ชื่อ | 📞 เบอร์` when either field is non-empty.
+- LINE text messages are capped at 4500 characters (`lineTextMaxLength`). Long responses are auto-split and sent in batches of up to 5 messages (`lineMessageBatchLimit`).
 
 ---
 
@@ -190,14 +205,6 @@ TZ=Asia/Bangkok
 
 ---
 
-## Message Formatting Rules
-
-- LINE text messages are capped at 4500 characters (`lineTextMaxLength`).
-- Long responses are auto-split and sent in batches of up to 5 messages (`lineMessageBatchLimit`).
-- Split points prefer newlines to avoid cutting mid-line.
-
----
-
 ## Critical Implementation Notes
 
 1. **Google Sheets format copying** — `class_schedule_sheets_store.go` copies row formatting (bold, background, checkbox, dropdown) from an adjacent row when inserting or updating a `สัปดาห์นี้` row. This is the most fragile part of the codebase. If you touch this logic, test with a real spreadsheet.
@@ -211,6 +218,8 @@ TZ=Asia/Bangkok
 5. **LINE group ID validation** — valid IDs start with `C` and pass `isLikelyLineTargetID()`. The `/groupid` command is intentionally unrestricted (no group allowlist) so admins can discover a new group's ID before adding it.
 
 6. **Google Sheets auth** — RSA JWT flow using a service account. The token is cached with a 1-minute refresh buffer. The service account email must have edit access to the spreadsheet.
+
+7. **Bulk confirm by index** — `processIndexBasedBulkCommand()` intercepts confirm/unconfirm before normal parsing. It detects the index-list form by checking the body contains only digits, commas, and spaces. Indices map to the `ListLessons()` result sorted by `NextStart` — the same order shown in `/ตารางเรียน`.
 
 ---
 

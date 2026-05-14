@@ -41,7 +41,7 @@ func TestProcessUpdateCommand(t *testing.T) {
 	if !strings.Contains(response, "⏳ แพรว") {
 		t.Fatalf("expected waiting confirmation emoji in response, got %q", response)
 	}
-	if !strings.Contains(response, "ชม.7-8") {
+	if !strings.Contains(response, "ชม.7,8") {
 		t.Fatalf("expected compact hour range, got %q", response)
 	}
 
@@ -75,6 +75,85 @@ func TestProcessConfirmCommand(t *testing.T) {
 	lesson := findLesson(t, store.ListLessons(), "แพรว", "English Foundation")
 	if !lesson.Confirmed {
 		t.Fatal("confirm command should mark lesson as confirmed")
+	}
+}
+
+func TestConfirmByIndex(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	// Get the sorted lesson list to know which student is at position 1
+	lessons := store.ListLessons()
+	if len(lessons) == 0 {
+		t.Fatal("expected seeded lessons in mock store")
+	}
+
+	// Confirm positions 1 and 2
+	response, handled, err := processStaffCommand("/คอนเฟิร์ม 1,2", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected index-based confirm to be handled")
+	}
+	if !strings.Contains(response, "✅ คอนเฟิร์มเวลาเรียน") {
+		t.Fatalf("expected confirm header in response, got %q", response)
+	}
+	if !strings.Contains(response, "1.") || !strings.Contains(response, "2.") {
+		t.Fatalf("expected lesson indices in response, got %q", response)
+	}
+
+	// Both lessons should now be confirmed
+	updatedLessons := store.ListLessons()
+	for _, lesson := range updatedLessons {
+		if lesson.Nickname == lessons[0].Nickname && !lesson.Confirmed {
+			t.Fatalf("lesson at index 1 (%s) should be confirmed", lesson.Nickname)
+		}
+		if lesson.Nickname == lessons[1].Nickname && !lesson.Confirmed {
+			t.Fatalf("lesson at index 2 (%s) should be confirmed", lesson.Nickname)
+		}
+	}
+}
+
+func TestConfirmByIndexOutOfRange(t *testing.T) {
+	loc := testLocation(t)
+	store := NewMockLessonStore(loc)
+
+	response, handled, err := processStaffCommand("/คอนเฟิร์ม 999", store, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("expected out-of-range index to still be handled")
+	}
+	if !strings.Contains(response, "⚠️") {
+		t.Fatalf("expected warning for out-of-range index, got %q", response)
+	}
+}
+
+func TestParseIndexList(t *testing.T) {
+	cases := []struct {
+		input   string
+		wantOK  bool
+		wantLen int
+	}{
+		{"1,2,5", true, 3},
+		{"1", true, 1},
+		{"1, 2, 3", true, 3},
+		{"1,2,2", true, 2}, // duplicates deduplicated
+		{"", false, 0},
+		{"แพรว", false, 0},   // Thai text → not an index list
+		{"1,แพรว", false, 0}, // mixed → not an index list
+		{"0", false, 0},      // zero is invalid
+	}
+	for _, tt := range cases {
+		indices, ok := parseIndexList(tt.input)
+		if ok != tt.wantOK {
+			t.Errorf("parseIndexList(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
+		}
+		if ok && len(indices) != tt.wantLen {
+			t.Errorf("parseIndexList(%q) len=%d, want %d", tt.input, len(indices), tt.wantLen)
+		}
 	}
 }
 
@@ -277,21 +356,17 @@ func TestHelpCommandThaiUsage(t *testing.T) {
 	}
 	expectedParts := []string{
 		"📌 คำสั่งใน LINE Group",
-		"/วิธีใช้งาน",
 		"/ตารางเรียน",
-		"/groupid",
-		"\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้",
+		"/ตารางเวลา",
 		"/ข้อมูลนักเรียน",
 		"/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
-		"ตัวอย่าง: \"/อัพเดท โบ โบรอท 9/5 13:00-15:00\"",
-		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
-		"ตัวอย่าง: \"/คอนเฟิร์ม โบ โบรอท\"",
-		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
-		"ตัวอย่าง: \"/ไม่คอนเฟิร์ม โบ โบรอท\"",
+		"/คอนเฟิร์ม โบ โบรอท",
+		"/คอนเฟิร์ม 1,2,5",
+		"/ไม่คอนเฟิร์ม โบ โบรอท",
+		"/ไม่คอนเฟิร์ม 1,3",
 		"/ลา ชื่อเล่น ชื่อจริง",
 		"/เข้าเรียน ชื่อเล่น ชื่อจริง",
-		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
-		"ระบบแจ้งตารางเรียนจากแท็บสัปดาห์นี้ทุกวัน 09:00",
+		"/groupid",
 	}
 	for _, part := range expectedParts {
 		if !strings.Contains(response, part) {

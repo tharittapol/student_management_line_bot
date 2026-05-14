@@ -163,6 +163,8 @@ func (s *ClassScheduleSheetsLessonStore) findStudentSchedules(ctx context.Contex
 			PastLessons:     recordPastLessonsText(record, weekly, s.loc, now),
 			NextLessons:     recordNextLessonsText(record, weekly, s.loc, now),
 			ScheduleNotes:   record.Status,
+			ParentName:      record.ParentName,
+			ParentPhone:     record.ParentPhone,
 		})
 	}
 	sortStudentScheduleSummaries(summaries)
@@ -541,6 +543,7 @@ func (r weeklyRecord) toStudentLesson(start, end time.Time, loc *time.Location) 
 		ScheduleText:   formatThaiSchedule(start, end),
 		Confirmed:      r.Confirmed,
 		LearningStatus: r.LearningStatus,
+		ParentPhone:    r.ParentPhone,
 		UpdatedAt:      time.Now().In(loc),
 	}
 }

@@ -245,6 +245,7 @@ type StudentLesson struct {
 	ScheduleText   string
 	Confirmed      bool
 	LearningStatus string
+	ParentPhone    string
 	UpdatedAt      time.Time
 }
 
@@ -259,6 +260,8 @@ type StudentScheduleSummary struct {
 	PastLessons     string
 	NextLessons     string
 	ScheduleNotes   string
+	ParentName      string
+	ParentPhone     string
 }
 
 type LessonStore interface {
@@ -1313,6 +1316,9 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location, sou
 	if isScheduleRequestCommand(normalized) {
 		return formatWeeklyLessons(store.ListLessons(), time.Now().In(loc)), true, nil
 	}
+	if isTimeSlotCommand(normalized) {
+		return formatTimeSlotSchedule(store.ListLessons()), true, nil
+	}
 	if isStudentScheduleRequestCommand(normalized) {
 		return processStudentScheduleRequest(normalized, store)
 	}
@@ -1327,6 +1333,10 @@ func processStaffCommand(text string, store LessonStore, loc *time.Location, sou
 }
 
 func processCompactSlashCommand(text string, store LessonStore) (string, bool, error) {
+	if response, handled, err := processIndexBasedBulkCommand(text, store); handled {
+		return response, handled, err
+	}
+
 	command, err := parseCompactSlashCommand(text)
 	if err != nil {
 		return "", true, err
@@ -1369,6 +1379,95 @@ func processCompactSlashCommand(text string, store LessonStore) (string, bool, e
 	default:
 		return "", false, nil
 	}
+}
+
+// processIndexBasedBulkCommand handles "/คอนเฟิร์ม 1,2,5" style commands that confirm
+// multiple lessons at once by their position in the /ตารางเรียน numbered list.
+func processIndexBasedBulkCommand(text string, store LessonStore) (string, bool, error) {
+	stripped := strings.TrimSpace(strings.TrimPrefix(text, "/"))
+	actionText, body, hasBody := strings.Cut(stripped, " ")
+	if !hasBody {
+		return "", false, nil
+	}
+
+	action := normalizeAction(actionText)
+	if action != "confirm" && action != "unconfirm" {
+		return "", false, nil
+	}
+
+	indices, ok := parseIndexList(strings.TrimSpace(body))
+	if !ok {
+		return "", false, nil
+	}
+
+	// Use the same sort order as /ตารางเรียน
+	lessons := store.ListLessons()
+	sort.Slice(lessons, func(i, j int) bool {
+		return lessons[i].NextStart.Before(lessons[j].NextStart)
+	})
+
+	headerEmoji := "✅"
+	headerText := "คอนเฟิร์มเวลาเรียน"
+	if action == "unconfirm" {
+		headerEmoji = "⏳"
+		headerText = "ไม่คอนเฟิร์มเวลาเรียน"
+	}
+
+	var b strings.Builder
+	b.WriteString(headerEmoji + " " + headerText)
+
+	for _, idx := range indices {
+		b.WriteString("\n\n")
+		if idx < 1 || idx > len(lessons) {
+			b.WriteString(fmt.Sprintf("⚠️ ไม่พบลำดับที่ %d", idx))
+			continue
+		}
+		target := lessons[idx-1]
+		var lesson StudentLesson
+		var err error
+		if action == "confirm" {
+			lesson, err = store.ConfirmLesson(target.Nickname, target.FirstName, "")
+		} else {
+			lesson, err = store.UnconfirmLesson(target.Nickname, target.FirstName, "")
+		}
+		if err != nil {
+			b.WriteString(fmt.Sprintf("⚠️ %s: %s", target.Nickname, err.Error()))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("%d. %s", idx, formatCompactLessonLine(lesson)))
+	}
+
+	return b.String(), true, nil
+}
+
+func parseIndexList(s string) ([]int, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	// Must contain only digits, commas, and spaces — no Thai letters or slashes
+	for _, r := range s {
+		if r != ',' && r != ' ' && (r < '0' || r > '9') {
+			return nil, false
+		}
+	}
+	seen := map[int]bool{}
+	var indices []int
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 1 {
+			return nil, false
+		}
+		if !seen[n] {
+			seen[n] = true
+			indices = append(indices, n)
+		}
+	}
+	return indices, len(indices) > 0
 }
 
 type compactSlashCommand struct {
@@ -1528,6 +1627,79 @@ func isStudentScheduleRequestCommand(text string) bool {
 	return strings.HasPrefix(text, "/ข้อมูลนักเรียน") || strings.HasPrefix(text, "/นักเรียน")
 }
 
+func isTimeSlotCommand(text string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	text = strings.ReplaceAll(text, " ", "")
+	return text == "/ตารางเวลา"
+}
+
+func formatTimeSlotSchedule(lessons []StudentLesson) string {
+	sorted := make([]StudentLesson, 0, len(lessons))
+	for _, l := range lessons {
+		if !l.NextStart.IsZero() {
+			sorted = append(sorted, l)
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].NextStart.Before(sorted[j].NextStart)
+	})
+
+	type dayKey struct {
+		year  int
+		month time.Month
+		day   int
+	}
+	dayLessons := map[dayKey][]StudentLesson{}
+	var dayOrder []dayKey
+	seen := map[dayKey]bool{}
+	for _, lesson := range sorted {
+		k := dayKey{lesson.NextStart.Year(), lesson.NextStart.Month(), lesson.NextStart.Day()}
+		if !seen[k] {
+			seen[k] = true
+			dayOrder = append(dayOrder, k)
+		}
+		dayLessons[k] = append(dayLessons[k], lesson)
+	}
+
+	var b strings.Builder
+	b.WriteString("⏰ ตารางเวลาสัปดาห์นี้")
+
+	if len(dayOrder) == 0 {
+		b.WriteString("\n\nยังไม่มีตารางเรียนสัปดาห์นี้")
+		return b.String()
+	}
+
+	slots := [][2]int{{10, 11}, {11, 12}, {12, 13}, {13, 14}, {14, 15}, {15, 16}, {16, 17}}
+
+	for _, dk := range dayOrder {
+		dls := dayLessons[dk]
+		b.WriteString("\n\n")
+		b.WriteString(formatLessonDayHeader(dls[0].NextStart))
+		for _, slot := range slots {
+			slotStart, slotEnd := slot[0], slot[1]
+			var names []string
+			for _, lesson := range dls {
+				lStartH := lesson.NextStart.Hour()
+				lEndH := lesson.NextEnd.Hour()
+				if lesson.NextEnd.Minute() > 0 {
+					lEndH++
+				}
+				if lStartH < slotEnd && lEndH > slotStart {
+					names = append(names, lesson.Nickname)
+				}
+			}
+			b.WriteString("\n")
+			if len(names) == 0 {
+				b.WriteString(fmt.Sprintf("%d-%d  ว่าง", slotStart, slotEnd))
+			} else {
+				b.WriteString(fmt.Sprintf("%d-%d  %s", slotStart, slotEnd, strings.Join(names, ", ")))
+			}
+		}
+	}
+
+	return b.String()
+}
+
 func processStudentScheduleRequest(text string, store LessonStore) (string, bool, error) {
 	return formatStudentScheduleSummaries(store.ListStudentSchedules()), true, nil
 }
@@ -1543,43 +1715,36 @@ func commandHelpText() string {
 	return strings.Join([]string{
 		"📌 คำสั่งใน LINE Group",
 		"",
-		"🧭 วิธีใช้งาน",
-		"/วิธีใช้งาน",
+		"📚 /ตารางเรียน",
+		"ตารางเรียนสัปดาห์นี้ พร้อมเบอร์โทรติดต่อ",
 		"",
-		"📚 ตารางเรียนจากแท็บสัปดาห์นี้",
-		"/ตารางเรียน",
+		"⏰ /ตารางเวลา",
+		"slot ว่าง/จอง ทุกชั่วโมง 10:00-17:00",
 		"",
-		"🆔 ดู LINE group id ของกลุ่มนี้",
-		"/groupid",
+		"👥 /ข้อมูลนักเรียน",
+		"รายชื่อนักเรียนที่เรียนอยู่ พร้อมผู้ปกครองและเบอร์โทร",
 		"",
-		"👥 นักเรียนที่ยังเรียนไม่จบ (\"ชื่อเล่น ชื่อจริง\" ดูได้จากคำสั่งนี้)",
-		"/ข้อมูลนักเรียน",
+		"🔄 /อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
+		"เปลี่ยนวันเวลาเรียน",
+		"เช่น: /อัพเดท โบ โบรอท 9/5 13:00-15:00",
 		"",
-		"🔄 อัพเดทเวลาเรียน",
-		"/อัพเดท ชื่อเล่น ชื่อจริง วัน/เดือน เวลาเริ่ม-เวลาจบ",
-		"ตัวอย่าง: \"/อัพเดท โบ โบรอท 9/5 13:00-15:00\"",
+		"✅ /คอนเฟิร์ม — ระบุชื่อ หรือเลขลำดับจาก /ตารางเรียน",
+		"/คอนเฟิร์ม โบ โบรอท",
+		"/คอนเฟิร์ม 1,2,5",
+		"/คอนเฟิร์ม โบ โบรอท 9/5 13:00-15:00  ← พร้อมเปลี่ยนเวลา",
 		"",
-		"✅ คอนเฟิร์ม",
-		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
-		"ตัวอย่าง: \"/คอนเฟิร์ม โบ โบรอท\"",
-		"",
-		"⏳ ไม่คอนเฟิร์ม",
-		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง",
-		"ตัวอย่าง: \"/ไม่คอนเฟิร์ม โบ โบรอท\"",
+		"⏳ /ไม่คอนเฟิร์ม — เช่นเดียวกัน",
+		"/ไม่คอนเฟิร์ม โบ โบรอท",
+		"/ไม่คอนเฟิร์ม 1,3",
 		"",
 		"📝 สถานะการเรียน",
 		"/ลา ชื่อเล่น ชื่อจริง",
 		"/เข้าเรียน ชื่อเล่น ชื่อจริง",
 		"",
-		"🗓 คอนเฟิร์มหรือไม่คอนเฟิร์มพร้อมเปลี่ยนเวลา",
-		"/คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
-		"/ไม่คอนเฟิร์ม ชื่อเล่น ชื่อจริง 9/5 13:00-15:00",
+		"📅 รูปแบบวันที่",
+		"9/5 = ปีปัจจุบัน  |  9/5/2570 = ปี พ.ศ. ที่ระบุ",
 		"",
-		"📅 กติกาปี",
-		"- ใส่แค่ วัน/เดือน เช่น 9/5 = ปีปัจจุบัน",
-		"- ใส่ปีด้วย เช่น 9/5/2570 = ใช้ปีที่ระบุ",
-		"",
-		"⏰ ระบบแจ้งตารางเรียนจากแท็บสัปดาห์นี้ทุกวัน 09:00 เวลา Asia/Bangkok",
+		"🆔 /groupid  →  ดู LINE group id ของกลุ่มนี้",
 	}, "\n")
 }
 
@@ -1799,8 +1964,12 @@ func formatCompactLessonLineWithYear(lesson StudentLesson, showYear bool) string
 	if strings.TrimSpace(lesson.LearningStatus) != "" {
 		statusPart = " | " + strings.TrimSpace(lesson.LearningStatus)
 	}
+	phonePart := ""
+	if strings.TrimSpace(lesson.ParentPhone) != "" {
+		phonePart = " | 📞 " + strings.TrimSpace(lesson.ParentPhone)
+	}
 	return fmt.Sprintf(
-		"%s %s (%s) | %s\n%s | %s%s | เหลือ %d ชม.",
+		"%s %s (%s) | %s\n%s | %s%s | เหลือ %d ชม.%s",
 		confirmEmoji(lesson),
 		lesson.Nickname,
 		lesson.FullName,
@@ -1809,6 +1978,7 @@ func formatCompactLessonLineWithYear(lesson StudentLesson, showYear bool) string
 		shortHourLabel(lesson),
 		statusPart,
 		remainingHours(lesson),
+		phonePart,
 	)
 }
 
@@ -1901,13 +2071,24 @@ func groupStudentScheduleSummaries(summaries []StudentScheduleSummary) []Student
 }
 
 func formatStudentListLine(index int, summary StudentScheduleSummary) string {
-	return fmt.Sprintf(
+	line := fmt.Sprintf(
 		"%d. %s - %s | %s",
 		index,
 		fallbackText(summary.Nickname, "-"),
 		fallbackText(summary.FirstName, fallbackText(summary.FullName, "-")),
 		fallbackText(summary.Course, "-"),
 	)
+	var parentParts []string
+	if p := strings.TrimSpace(summary.ParentName); p != "" {
+		parentParts = append(parentParts, p)
+	}
+	if ph := strings.TrimSpace(summary.ParentPhone); ph != "" {
+		parentParts = append(parentParts, "📞 "+ph)
+	}
+	if len(parentParts) > 0 {
+		line += "\n   👨‍👩‍👧 " + strings.Join(parentParts, " | ")
+	}
+	return line
 }
 
 func fallbackText(value string, fallback string) string {
@@ -1984,7 +2165,11 @@ func shortHourLabel(lesson StudentLesson) string {
 	if start == end {
 		return fmt.Sprintf("ชม.%d", start)
 	}
-	return fmt.Sprintf("ชม.%d-%d", start, end)
+	parts := make([]string, end-start+1)
+	for i := range parts {
+		parts[i] = strconv.Itoa(start + i)
+	}
+	return "ชม." + strings.Join(parts, ",")
 }
 
 func nextHourLabel(lesson StudentLesson) string {
