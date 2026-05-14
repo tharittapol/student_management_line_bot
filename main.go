@@ -1631,7 +1631,7 @@ func isTimeSlotCommand(text string) bool {
 func formatTimeSlotSchedule(lessons []StudentLesson) string {
 	sorted := make([]StudentLesson, 0, len(lessons))
 	for _, l := range lessons {
-		if !l.NextStart.IsZero() {
+		if !l.NextStart.IsZero() && strings.TrimSpace(l.LearningStatus) != "ลา" {
 			sorted = append(sorted, l)
 		}
 	}
@@ -2116,6 +2116,9 @@ func formatLearningStatusNotification(lesson StudentLesson, status string) strin
 }
 
 func confirmEmoji(lesson StudentLesson) string {
+	if strings.TrimSpace(lesson.LearningStatus) == "ลา" {
+		return "🏖️"
+	}
 	if lesson.Confirmed {
 		return "✅"
 	}

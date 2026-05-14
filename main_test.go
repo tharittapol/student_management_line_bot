@@ -329,10 +329,10 @@ func TestFormatWeeklyLessons(t *testing.T) {
 	if !strings.Contains(message, "📅 วันพุธ 6 พ.ค. 2569") || !strings.Contains(message, "📅 วันเสาร์ 9 พ.ค. 2569") {
 		t.Fatalf("expected lessons to be grouped by Thai day headers, got %q", message)
 	}
-	if !strings.Contains(message, "1. ⏳ แพรว") || !strings.Contains(message, "2. ✅ บอส") {
+	if !strings.Contains(message, "1. ⏳ แพรว") || !strings.Contains(message, "2. 🏖️ บอส") {
 		t.Fatalf("expected numbered lessons to continue across day groups, got %q", message)
 	}
-	if !strings.Contains(message, "⏳ แพรว") || !strings.Contains(message, "✅ บอส") {
+	if !strings.Contains(message, "⏳ แพรว") || !strings.Contains(message, "🏖️ บอส") {
 		t.Fatalf("expected confirmation emojis per student, got %q", message)
 	}
 	if !strings.Contains(message, "เข้าเรียนปกติ") || !strings.Contains(message, "ลา") {
