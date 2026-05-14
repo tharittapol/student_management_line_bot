@@ -386,7 +386,7 @@ func TestGroupIDCommand(t *testing.T) {
 	if !handled {
 		t.Fatal("expected group id command to be handled")
 	}
-	if !strings.Contains(response, "Cgroup123") || !strings.Contains(response, "LINE_GROUP_IDS") {
+	if !strings.Contains(response, "Cgroup123") {
 		t.Fatalf("expected group id response, got %q", response)
 	}
 }

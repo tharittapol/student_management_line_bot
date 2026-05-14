@@ -1614,12 +1614,7 @@ func formatGroupIDResponse(groupID string) string {
 	if groupID == "" {
 		return "คำสั่งนี้ใช้ใน LINE group เท่านั้น"
 	}
-	return strings.Join([]string{
-		"🆔 LINE group id",
-		groupID,
-		"",
-		"นำค่านี้ไปเพิ่มใน `LINE_GROUP_IDS` แล้ว deploy Cloud Run revision ใหม่",
-	}, "\n")
+	return "🆔 LINE group id\n" + groupID
 }
 
 func isStudentScheduleRequestCommand(text string) bool {
@@ -1787,10 +1782,15 @@ func notifyDailyLessons(store LessonStore, lineClient *LineClient, loc *time.Loc
 		return errors.New("ยังไม่มี LINE group ที่ลงทะเบียนสำหรับ weekly notification")
 	}
 
-	message := formatWeeklyLessons(store.ListLessons(), time.Now().In(loc))
+	lessons := store.ListLessons()
+	scheduleMsg := formatWeeklyLessons(lessons, time.Now().In(loc))
+	timeslotMsg := formatTimeSlotSchedule(lessons)
 	for _, groupID := range groupIDs {
-		if err := lineClient.SendText(groupID, message); err != nil {
-			return fmt.Errorf("send to group %s: %w", groupID, err)
+		if err := lineClient.SendText(groupID, scheduleMsg); err != nil {
+			return fmt.Errorf("send schedule to group %s: %w", groupID, err)
+		}
+		if err := lineClient.SendText(groupID, timeslotMsg); err != nil {
+			return fmt.Errorf("send timeslot to group %s: %w", groupID, err)
 		}
 	}
 	return nil
